@@ -66,17 +66,13 @@ impl RtmpPuller {
         let puller = Self {
             config,
             event_tx: tx,
-            event_rx: Some(rx),
+            event_rx: None, // Receiver is returned to caller
         };
 
-        // Take the receiver to return to caller
-        // (we can't clone mpsc::Receiver, so this is a one-time operation)
-        let rx = puller.event_rx.clone();
-
-        (puller, rx.unwrap())
+        (puller, rx)
     }
 
-    /// Take the event receiver
+    /// Take the event receiver (if not already taken)
     pub fn take_events(&mut self) -> Option<mpsc::Receiver<ClientEvent>> {
         self.event_rx.take()
     }
