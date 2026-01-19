@@ -1,0 +1,975 @@
+//! Per-connection RTMP handler
+//!
+//! Manages the lifecycle of a single RTMP connection:
+//! 1. Handshake
+//! 2. Connect command
+//! 3. Stream commands (publish/play)
+//! 4. Media handling
+//! 5. Disconnect
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use bytes::{Bytes, BytesMut};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::net::TcpStream;
+use tokio::time::{timeout, Duration};
+
+use crate::amf::AmfValue;
+use crate::error::{Error, ProtocolError, Result};
+use crate::media::flv::FlvTag;
+use crate::media::{AacData, H264Data};
+use crate::protocol::chunk::{ChunkDecoder, ChunkEncoder, RtmpChunk};
+use crate::protocol::constants::*;
+use crate::protocol::handshake::{Handshake, HandshakeRole};
+use crate::protocol::message::{
+    Command, ConnectParams, DataMessage, PlayParams, PublishParams, RtmpMessage, UserControlEvent,
+};
+use crate::protocol::quirks::EncoderType;
+use crate::server::config::ServerConfig;
+use crate::server::handler::{AuthResult, MediaDeliveryMode, RtmpHandler};
+use crate::session::context::{SessionContext, StreamContext};
+use crate::session::state::SessionState;
+
+/// Per-connection handler
+pub struct Connection<H: RtmpHandler> {
+    /// Session state
+    state: SessionState,
+
+    /// Session context for callbacks
+    context: SessionContext,
+
+    /// TCP stream (buffered)
+    reader: BufReader<tokio::io::ReadHalf<TcpStream>>,
+    writer: BufWriter<tokio::io::WriteHalf<TcpStream>>,
+
+    /// Read buffer
+    read_buf: BytesMut,
+
+    /// Chunk decoder/encoder
+    chunk_decoder: ChunkDecoder,
+    chunk_encoder: ChunkEncoder,
+
+    /// Write buffer for outgoing chunks
+    write_buf: BytesMut,
+
+    /// Server configuration
+    config: ServerConfig,
+
+    /// Application handler
+    handler: Arc<H>,
+
+    /// Pending FC commands (stream key -> transaction ID)
+    pending_fc: HashMap<String, f64>,
+}
+
+impl<H: RtmpHandler> Connection<H> {
+    /// Create a new connection handler
+    pub fn new(
+        session_id: u64,
+        socket: TcpStream,
+        peer_addr: SocketAddr,
+        config: ServerConfig,
+        handler: Arc<H>,
+    ) -> Self {
+        let (read_half, write_half) = tokio::io::split(socket);
+
+        Self {
+            state: SessionState::new(session_id, peer_addr),
+            context: SessionContext::new(session_id, peer_addr),
+            reader: BufReader::with_capacity(config.read_buffer_size, read_half),
+            writer: BufWriter::with_capacity(config.write_buffer_size, write_half),
+            read_buf: BytesMut::with_capacity(config.read_buffer_size),
+            chunk_decoder: ChunkDecoder::new(),
+            chunk_encoder: ChunkEncoder::new(),
+            write_buf: BytesMut::with_capacity(config.write_buffer_size),
+            config,
+            handler,
+            pending_fc: HashMap::new(),
+        }
+    }
+
+    /// Run the connection
+    pub async fn run(&mut self) -> Result<()> {
+        // Check if handler allows connection
+        if !self.handler.on_connection(&self.context).await {
+            return Err(Error::Rejected("Connection rejected by handler".into()));
+        }
+
+        // Perform handshake
+        self.do_handshake().await?;
+        self.handler.on_handshake_complete(&self.context).await;
+
+        // Set our chunk size
+        self.send_set_chunk_size(self.config.chunk_size).await?;
+        self.chunk_encoder.set_chunk_size(self.config.chunk_size);
+
+        // Main message loop
+        let idle_timeout = self.config.idle_timeout;
+        loop {
+            match timeout(idle_timeout, self.read_and_process()).await {
+                Ok(Ok(true)) => continue,
+                Ok(Ok(false)) => break, // Clean disconnect
+                Ok(Err(e)) => {
+                    tracing::debug!(error = %e, "Processing error");
+                    break;
+                }
+                Err(_) => {
+                    tracing::debug!("Idle timeout");
+                    break;
+                }
+            }
+        }
+
+        // Notify handler of disconnect
+        self.handler.on_disconnect(&self.context).await;
+
+        Ok(())
+    }
+
+    /// Perform RTMP handshake
+    async fn do_handshake(&mut self) -> Result<()> {
+        let mut handshake = Handshake::new(HandshakeRole::Server);
+
+        // Move to waiting state
+        handshake.generate_initial();
+        self.state.start_handshake();
+
+        // Wait for C0C1
+        let connection_timeout = self.config.connection_timeout;
+        timeout(connection_timeout, async {
+            loop {
+                // Read more data
+                let bytes_needed = handshake.bytes_needed();
+                if bytes_needed > 0 && self.read_buf.len() < bytes_needed {
+                    let n = self.reader.read_buf(&mut self.read_buf).await?;
+                    if n == 0 {
+                        return Err(Error::ConnectionClosed);
+                    }
+                }
+
+                // Process handshake
+                let mut buf = Bytes::copy_from_slice(&self.read_buf);
+                if let Some(response) = handshake.process(&mut buf)? {
+                    // Consume processed bytes
+                    let consumed = self.read_buf.len() - buf.len();
+                    self.read_buf.advance(consumed);
+
+                    // Send response (S0S1S2 or nothing)
+                    self.writer.write_all(&response).await?;
+                    self.writer.flush().await?;
+                }
+
+                if handshake.is_done() {
+                    break;
+                }
+            }
+
+            Ok::<_, Error>(())
+        })
+        .await
+        .map_err(|_| Error::Timeout)??;
+
+        self.state.complete_handshake();
+        tracing::debug!(session_id = self.state.id, "Handshake complete");
+
+        Ok(())
+    }
+
+    /// Read data and process messages
+    async fn read_and_process(&mut self) -> Result<bool> {
+        // Read more data
+        let n = self.reader.read_buf(&mut self.read_buf).await?;
+        if n == 0 {
+            return Ok(false); // Connection closed
+        }
+
+        let needs_ack = self.state.add_bytes_received(n as u64);
+
+        // Try to decode chunks
+        while let Some(chunk) = self.chunk_decoder.decode(&mut self.read_buf)? {
+            self.handle_chunk(chunk).await?;
+        }
+
+        // Send acknowledgement if needed
+        if needs_ack {
+            self.send_acknowledgement().await?;
+        }
+
+        Ok(true)
+    }
+
+    /// Handle a decoded chunk
+    async fn handle_chunk(&mut self, chunk: RtmpChunk) -> Result<()> {
+        let message = RtmpMessage::from_chunk(&chunk)?;
+
+        match message {
+            RtmpMessage::SetChunkSize(size) => {
+                tracing::debug!(size = size, "Peer set chunk size");
+                self.chunk_decoder.set_chunk_size(size);
+                self.state.in_chunk_size = size;
+            }
+
+            RtmpMessage::Abort { csid } => {
+                self.chunk_decoder.abort(csid);
+            }
+
+            RtmpMessage::Acknowledgement { sequence: _ } => {
+                // Peer acknowledged bytes - we can track this for flow control
+            }
+
+            RtmpMessage::WindowAckSize(size) => {
+                self.state.window_ack_size = size;
+            }
+
+            RtmpMessage::SetPeerBandwidth {
+                size,
+                limit_type: _,
+            } => {
+                // Send window ack size back
+                self.send_window_ack_size(size).await?;
+            }
+
+            RtmpMessage::UserControl(event) => {
+                self.handle_user_control(event).await?;
+            }
+
+            RtmpMessage::Command(cmd) | RtmpMessage::CommandAmf3(cmd) => {
+                self.handle_command(cmd).await?;
+            }
+
+            RtmpMessage::Data(data) | RtmpMessage::DataAmf3(data) => {
+                self.handle_data(data).await?;
+            }
+
+            RtmpMessage::Audio { timestamp, data } => {
+                self.handle_audio(timestamp, data).await?;
+            }
+
+            RtmpMessage::Video { timestamp, data } => {
+                self.handle_video(timestamp, data).await?;
+            }
+
+            _ => {
+                tracing::trace!(message = ?message, "Unhandled message");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle user control event
+    async fn handle_user_control(&mut self, event: UserControlEvent) -> Result<()> {
+        match event {
+            UserControlEvent::PingRequest(timestamp) => {
+                self.send_ping_response(timestamp).await?;
+            }
+            UserControlEvent::SetBufferLength {
+                stream_id: _,
+                buffer_ms: _,
+            } => {
+                // Client's buffer length - we can use this for flow control
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Handle command message
+    async fn handle_command(&mut self, cmd: Command) -> Result<()> {
+        match cmd.name.as_str() {
+            CMD_CONNECT => self.handle_connect(cmd).await?,
+            CMD_CREATE_STREAM => self.handle_create_stream(cmd).await?,
+            CMD_DELETE_STREAM => self.handle_delete_stream(cmd).await?,
+            CMD_PUBLISH => self.handle_publish(cmd).await?,
+            CMD_PLAY => self.handle_play(cmd).await?,
+            CMD_FC_PUBLISH => self.handle_fc_publish(cmd).await?,
+            CMD_FC_UNPUBLISH => self.handle_fc_unpublish(cmd).await?,
+            CMD_RELEASE_STREAM => self.handle_release_stream(cmd).await?,
+            CMD_CLOSE | "closeStream" => self.handle_close_stream(cmd).await?,
+            _ => {
+                tracing::trace!(command = cmd.name, "Unknown command");
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle connect command
+    async fn handle_connect(&mut self, cmd: Command) -> Result<()> {
+        let params = ConnectParams::from_amf(&cmd.command_object);
+        let encoder_type = params
+            .flash_ver
+            .as_deref()
+            .map(EncoderType::from_flash_ver)
+            .unwrap_or(EncoderType::Unknown);
+
+        // Call handler
+        let result = self.handler.on_connect(&self.context, &params).await;
+
+        match result {
+            AuthResult::Accept => {
+                self.state.on_connect(params.clone(), encoder_type);
+                self.context.with_connect(params, encoder_type);
+
+                // Send window ack size
+                self.send_window_ack_size(self.config.window_ack_size)
+                    .await?;
+
+                // Send peer bandwidth
+                self.send_peer_bandwidth(self.config.peer_bandwidth).await?;
+
+                // Send stream begin
+                self.send_user_control(UserControlEvent::StreamBegin(0))
+                    .await?;
+
+                // Send connect result
+                self.send_connect_result(cmd.transaction_id).await?;
+
+                tracing::info!(
+                    session_id = self.state.id,
+                    app = self.context.app,
+                    "Connected"
+                );
+            }
+            AuthResult::Reject(reason) => {
+                self.send_connect_error(cmd.transaction_id, &reason).await?;
+                return Err(Error::Rejected(reason));
+            }
+            AuthResult::Redirect { url } => {
+                self.send_connect_redirect(cmd.transaction_id, &url).await?;
+                return Err(Error::Rejected(format!("Redirected to {}", url)));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle createStream command
+    async fn handle_create_stream(&mut self, cmd: Command) -> Result<()> {
+        let stream_id = self.state.allocate_stream_id();
+
+        let result = Command::result(
+            cmd.transaction_id,
+            AmfValue::Null,
+            AmfValue::Number(stream_id as f64),
+        );
+
+        self.send_command(CSID_COMMAND, 0, &result).await?;
+
+        tracing::debug!(stream_id = stream_id, "Stream created");
+        Ok(())
+    }
+
+    /// Handle deleteStream command
+    async fn handle_delete_stream(&mut self, cmd: Command) -> Result<()> {
+        let stream_id = cmd
+            .arguments
+            .first()
+            .and_then(|v| v.as_number())
+            .unwrap_or(0.0) as u32;
+
+        if let Some(stream) = self.state.remove_stream(stream_id) {
+            if stream.is_publishing() {
+                let stream_ctx = StreamContext::new(
+                    self.context.clone(),
+                    stream_id,
+                    stream.stream_key.unwrap_or_default(),
+                    true,
+                );
+                self.handler.on_publish_stop(&stream_ctx).await;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle FCPublish command (OBS/Twitch compatibility)
+    async fn handle_fc_publish(&mut self, cmd: Command) -> Result<()> {
+        let stream_key = cmd
+            .arguments
+            .first()
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let result = self.handler.on_fc_publish(&self.context, &stream_key).await;
+
+        match result {
+            AuthResult::Accept => {
+                // Store for later publish command
+                self.pending_fc
+                    .insert(stream_key.clone(), cmd.transaction_id);
+
+                // Send onFCPublish response
+                let response = Command {
+                    name: CMD_ON_FC_PUBLISH.to_string(),
+                    transaction_id: 0.0,
+                    command_object: AmfValue::Null,
+                    arguments: vec![],
+                    stream_id: 0,
+                };
+                self.send_command(CSID_COMMAND, 0, &response).await?;
+            }
+            AuthResult::Reject(reason) => {
+                return Err(Error::Rejected(reason));
+            }
+            AuthResult::Redirect { url } => {
+                return Err(Error::Rejected(format!("Redirected to {}", url)));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle FCUnpublish command
+    async fn handle_fc_unpublish(&mut self, cmd: Command) -> Result<()> {
+        let stream_key = cmd.arguments.first().and_then(|v| v.as_str()).unwrap_or("");
+
+        self.pending_fc.remove(stream_key);
+
+        // Send onFCUnpublish response
+        let response = Command {
+            name: CMD_ON_FC_UNPUBLISH.to_string(),
+            transaction_id: 0.0,
+            command_object: AmfValue::Null,
+            arguments: vec![],
+            stream_id: 0,
+        };
+        self.send_command(CSID_COMMAND, 0, &response).await?;
+
+        Ok(())
+    }
+
+    /// Handle releaseStream command
+    async fn handle_release_stream(&mut self, _cmd: Command) -> Result<()> {
+        // No response needed, this is just cleanup notification
+        Ok(())
+    }
+
+    /// Handle publish command
+    async fn handle_publish(&mut self, cmd: Command) -> Result<()> {
+        let stream_key = cmd
+            .arguments
+            .first()
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let publish_type = cmd
+            .arguments
+            .get(1)
+            .and_then(|v| v.as_str())
+            .unwrap_or("live")
+            .to_string();
+
+        let params = PublishParams {
+            stream_key: stream_key.clone(),
+            publish_type: publish_type.clone(),
+            stream_id: cmd.stream_id,
+        };
+
+        let result = self.handler.on_publish(&self.context, &params).await;
+
+        match result {
+            AuthResult::Accept => {
+                // Update stream state
+                if let Some(stream) = self.state.get_stream_mut(cmd.stream_id) {
+                    stream.start_publish(stream_key.clone(), publish_type);
+                }
+
+                // Send StreamBegin
+                self.send_user_control(UserControlEvent::StreamBegin(cmd.stream_id))
+                    .await?;
+
+                // Send onStatus
+                let status = Command::on_status(
+                    cmd.stream_id,
+                    "status",
+                    NS_PUBLISH_START,
+                    &format!("{} is now published", stream_key),
+                );
+                self.send_command(CSID_COMMAND, cmd.stream_id, &status)
+                    .await?;
+
+                tracing::info!(
+                    session_id = self.state.id,
+                    stream_key = stream_key,
+                    "Publishing started"
+                );
+            }
+            AuthResult::Reject(reason) => {
+                let status =
+                    Command::on_status(cmd.stream_id, "error", NS_PUBLISH_BAD_NAME, &reason);
+                self.send_command(CSID_COMMAND, cmd.stream_id, &status)
+                    .await?;
+                return Err(Error::Rejected(reason));
+            }
+            AuthResult::Redirect { url } => {
+                return Err(Error::Rejected(format!("Redirected to {}", url)));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle play command
+    async fn handle_play(&mut self, cmd: Command) -> Result<()> {
+        let stream_name = cmd
+            .arguments
+            .first()
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let start = cmd
+            .arguments
+            .get(1)
+            .and_then(|v| v.as_number())
+            .unwrap_or(-2.0);
+
+        let duration = cmd
+            .arguments
+            .get(2)
+            .and_then(|v| v.as_number())
+            .unwrap_or(-1.0);
+
+        let reset = cmd
+            .arguments
+            .get(3)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let params = PlayParams {
+            stream_name: stream_name.clone(),
+            start,
+            duration,
+            reset,
+            stream_id: cmd.stream_id,
+        };
+
+        let result = self.handler.on_play(&self.context, &params).await;
+
+        match result {
+            AuthResult::Accept => {
+                if let Some(stream) = self.state.get_stream_mut(cmd.stream_id) {
+                    stream.start_play(stream_name.clone());
+                }
+
+                // Send StreamBegin
+                self.send_user_control(UserControlEvent::StreamBegin(cmd.stream_id))
+                    .await?;
+
+                // Send onStatus Reset
+                if reset {
+                    let status = Command::on_status(
+                        cmd.stream_id,
+                        "status",
+                        NS_PLAY_RESET,
+                        "Playing and resetting",
+                    );
+                    self.send_command(CSID_COMMAND, cmd.stream_id, &status)
+                        .await?;
+                }
+
+                // Send onStatus Start
+                let status = Command::on_status(
+                    cmd.stream_id,
+                    "status",
+                    NS_PLAY_START,
+                    &format!("Started playing {}", stream_name),
+                );
+                self.send_command(CSID_COMMAND, cmd.stream_id, &status)
+                    .await?;
+
+                tracing::info!(
+                    session_id = self.state.id,
+                    stream_name = stream_name,
+                    "Playing started"
+                );
+            }
+            AuthResult::Reject(reason) => {
+                let status =
+                    Command::on_status(cmd.stream_id, "error", NS_PLAY_STREAM_NOT_FOUND, &reason);
+                self.send_command(CSID_COMMAND, cmd.stream_id, &status)
+                    .await?;
+            }
+            AuthResult::Redirect { url: _ } => {
+                // Handle redirect
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle closeStream command
+    async fn handle_close_stream(&mut self, cmd: Command) -> Result<()> {
+        if let Some(stream) = self.state.get_stream_mut(cmd.stream_id) {
+            stream.stop();
+        }
+        Ok(())
+    }
+
+    /// Handle data message
+    async fn handle_data(&mut self, data: DataMessage) -> Result<()> {
+        match data.name.as_str() {
+            CMD_SET_DATA_FRAME => {
+                // @setDataFrame usually has "onMetaData" as first value
+                if let Some(AmfValue::String(name)) = data.values.first() {
+                    if name == CMD_ON_METADATA {
+                        self.handle_metadata(data.stream_id, &data.values[1..])
+                            .await?;
+                    }
+                }
+            }
+            CMD_ON_METADATA => {
+                self.handle_metadata(data.stream_id, &data.values).await?;
+            }
+            _ => {
+                tracing::trace!(name = data.name, "Unknown data message");
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle metadata
+    async fn handle_metadata(&mut self, stream_id: u32, values: &[AmfValue]) -> Result<()> {
+        // Extract metadata object
+        let metadata: HashMap<String, AmfValue> = values
+            .first()
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+
+        if let Some(stream) = self.state.get_stream_mut(stream_id) {
+            stream.on_metadata();
+        }
+
+        if let Some(stream) = self.state.get_stream(stream_id) {
+            if stream.is_publishing() {
+                let stream_ctx = StreamContext::new(
+                    self.context.clone(),
+                    stream_id,
+                    stream.stream_key.clone().unwrap_or_default(),
+                    true,
+                );
+                self.handler.on_metadata(&stream_ctx, &metadata).await;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle audio message
+    async fn handle_audio(&mut self, timestamp: u32, data: Bytes) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        // Find publishing stream
+        let stream_id = self.find_publishing_stream()?;
+        let stream = self
+            .state
+            .get_stream_mut(stream_id)
+            .ok_or_else(|| ProtocolError::StreamNotFound(stream_id))?;
+
+        let is_header = data.len() >= 2 && (data[0] >> 4) == 10 && data[1] == 0;
+        stream.on_audio(timestamp, is_header, data.len());
+
+        // Store sequence header
+        if is_header {
+            let tag = FlvTag::audio(timestamp, data.clone());
+            stream.gop_buffer.set_audio_header(tag);
+        }
+
+        // Create stream context for callbacks
+        let stream_key = stream.stream_key.clone().unwrap_or_default();
+        let stream_ctx = StreamContext::new(self.context.clone(), stream_id, stream_key, true);
+
+        // Deliver based on mode
+        let mode = self.handler.media_delivery_mode();
+
+        if matches!(mode, MediaDeliveryMode::RawFlv | MediaDeliveryMode::Both) {
+            let tag = FlvTag::audio(timestamp, data.clone());
+            self.handler.on_media_tag(&stream_ctx, &tag).await;
+        }
+
+        if matches!(
+            mode,
+            MediaDeliveryMode::ParsedFrames | MediaDeliveryMode::Both
+        ) {
+            if data.len() >= 2 && (data[0] >> 4) == 10 {
+                // AAC
+                if let Ok(aac_data) = AacData::parse(data.slice(1..)) {
+                    self.handler
+                        .on_audio_frame(&stream_ctx, &aac_data, timestamp)
+                        .await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle video message
+    async fn handle_video(&mut self, timestamp: u32, data: Bytes) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        // Find publishing stream
+        let stream_id = self.find_publishing_stream()?;
+        let stream = self
+            .state
+            .get_stream_mut(stream_id)
+            .ok_or_else(|| ProtocolError::StreamNotFound(stream_id))?;
+
+        let is_keyframe = (data[0] >> 4) == 1;
+        let is_header = data.len() >= 2 && (data[0] & 0x0F) == 7 && data[1] == 0;
+        stream.on_video(timestamp, is_keyframe, is_header, data.len());
+
+        // Create FLV tag
+        let tag = FlvTag::video(timestamp, data.clone());
+
+        // Store sequence header
+        if is_header {
+            stream.gop_buffer.set_video_header(tag.clone());
+        } else {
+            // Add to GOP buffer
+            stream.gop_buffer.push(tag.clone());
+        }
+
+        // Create stream context for callbacks
+        let stream_key = stream.stream_key.clone().unwrap_or_default();
+        let stream_ctx = StreamContext::new(self.context.clone(), stream_id, stream_key, true);
+
+        // Notify keyframe
+        if is_keyframe && !is_header {
+            self.handler.on_keyframe(&stream_ctx, timestamp).await;
+        }
+
+        // Deliver based on mode
+        let mode = self.handler.media_delivery_mode();
+
+        if matches!(mode, MediaDeliveryMode::RawFlv | MediaDeliveryMode::Both) {
+            self.handler.on_media_tag(&stream_ctx, &tag).await;
+        }
+
+        if matches!(
+            mode,
+            MediaDeliveryMode::ParsedFrames | MediaDeliveryMode::Both
+        ) {
+            if data.len() >= 2 && (data[0] & 0x0F) == 7 {
+                // AVC/H.264
+                if let Ok(h264_data) = H264Data::parse(data.slice(1..)) {
+                    self.handler
+                        .on_video_frame(&stream_ctx, &h264_data, timestamp)
+                        .await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Find the publishing stream (assumes single publish per connection)
+    fn find_publishing_stream(&self) -> Result<u32> {
+        for (id, stream) in &self.state.streams {
+            if stream.is_publishing() {
+                return Ok(*id);
+            }
+        }
+        Err(ProtocolError::StreamNotFound(0).into())
+    }
+
+    // === Message sending helpers ===
+
+    async fn send_command(&mut self, csid: u32, stream_id: u32, cmd: &Command) -> Result<()> {
+        let (msg_type, payload) = RtmpMessage::Command(cmd.clone()).encode();
+
+        let chunk = RtmpChunk {
+            csid,
+            timestamp: 0,
+            message_type: msg_type,
+            stream_id,
+            payload,
+        };
+
+        self.write_buf.clear();
+        self.chunk_encoder.encode(&chunk, &mut self.write_buf);
+        self.writer.write_all(&self.write_buf).await?;
+        self.writer.flush().await?;
+
+        Ok(())
+    }
+
+    async fn send_connect_result(&mut self, transaction_id: f64) -> Result<()> {
+        let mut props = HashMap::new();
+        props.insert(
+            "fmsVer".to_string(),
+            AmfValue::String("FMS/3,5,7,7009".into()),
+        );
+        props.insert("capabilities".to_string(), AmfValue::Number(31.0));
+        props.insert("mode".to_string(), AmfValue::Number(1.0));
+
+        let mut info = HashMap::new();
+        info.insert("level".to_string(), AmfValue::String("status".into()));
+        info.insert(
+            "code".to_string(),
+            AmfValue::String(NC_CONNECT_SUCCESS.into()),
+        );
+        info.insert(
+            "description".to_string(),
+            AmfValue::String("Connection succeeded".into()),
+        );
+        info.insert("objectEncoding".to_string(), AmfValue::Number(0.0));
+
+        let result = Command::result(
+            transaction_id,
+            AmfValue::Object(props),
+            AmfValue::Object(info),
+        );
+
+        self.send_command(CSID_COMMAND, 0, &result).await
+    }
+
+    async fn send_connect_error(&mut self, transaction_id: f64, reason: &str) -> Result<()> {
+        let mut info = HashMap::new();
+        info.insert("level".to_string(), AmfValue::String("error".into()));
+        info.insert(
+            "code".to_string(),
+            AmfValue::String(NC_CONNECT_REJECTED.into()),
+        );
+        info.insert("description".to_string(), AmfValue::String(reason.into()));
+
+        let error = Command::error(transaction_id, AmfValue::Null, AmfValue::Object(info));
+
+        self.send_command(CSID_COMMAND, 0, &error).await
+    }
+
+    async fn send_connect_redirect(&mut self, transaction_id: f64, url: &str) -> Result<()> {
+        let mut info = HashMap::new();
+        info.insert("level".to_string(), AmfValue::String("error".into()));
+        info.insert(
+            "code".to_string(),
+            AmfValue::String(NC_CONNECT_REJECTED.into()),
+        );
+        info.insert(
+            "description".to_string(),
+            AmfValue::String("Redirect".into()),
+        );
+        info.insert("ex.redirect".to_string(), AmfValue::String(url.into()));
+
+        let error = Command::error(transaction_id, AmfValue::Null, AmfValue::Object(info));
+
+        self.send_command(CSID_COMMAND, 0, &error).await
+    }
+
+    async fn send_set_chunk_size(&mut self, size: u32) -> Result<()> {
+        let (msg_type, payload) = RtmpMessage::SetChunkSize(size).encode();
+
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: msg_type,
+            stream_id: 0,
+            payload,
+        };
+
+        self.write_buf.clear();
+        self.chunk_encoder.encode(&chunk, &mut self.write_buf);
+        self.writer.write_all(&self.write_buf).await?;
+        self.writer.flush().await?;
+
+        Ok(())
+    }
+
+    async fn send_window_ack_size(&mut self, size: u32) -> Result<()> {
+        let (msg_type, payload) = RtmpMessage::WindowAckSize(size).encode();
+
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: msg_type,
+            stream_id: 0,
+            payload,
+        };
+
+        self.write_buf.clear();
+        self.chunk_encoder.encode(&chunk, &mut self.write_buf);
+        self.writer.write_all(&self.write_buf).await?;
+        self.writer.flush().await?;
+
+        Ok(())
+    }
+
+    async fn send_peer_bandwidth(&mut self, size: u32) -> Result<()> {
+        let (msg_type, payload) = RtmpMessage::SetPeerBandwidth {
+            size,
+            limit_type: BANDWIDTH_LIMIT_DYNAMIC,
+        }
+        .encode();
+
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: msg_type,
+            stream_id: 0,
+            payload,
+        };
+
+        self.write_buf.clear();
+        self.chunk_encoder.encode(&chunk, &mut self.write_buf);
+        self.writer.write_all(&self.write_buf).await?;
+        self.writer.flush().await?;
+
+        Ok(())
+    }
+
+    async fn send_user_control(&mut self, event: UserControlEvent) -> Result<()> {
+        let (msg_type, payload) = RtmpMessage::UserControl(event).encode();
+
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: msg_type,
+            stream_id: 0,
+            payload,
+        };
+
+        self.write_buf.clear();
+        self.chunk_encoder.encode(&chunk, &mut self.write_buf);
+        self.writer.write_all(&self.write_buf).await?;
+        self.writer.flush().await?;
+
+        Ok(())
+    }
+
+    async fn send_acknowledgement(&mut self) -> Result<()> {
+        let sequence = self.state.bytes_received as u32;
+
+        let (msg_type, payload) = RtmpMessage::Acknowledgement { sequence }.encode();
+
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: msg_type,
+            stream_id: 0,
+            payload,
+        };
+
+        self.write_buf.clear();
+        self.chunk_encoder.encode(&chunk, &mut self.write_buf);
+        self.writer.write_all(&self.write_buf).await?;
+        self.writer.flush().await?;
+
+        self.state.mark_ack_sent();
+        Ok(())
+    }
+
+    async fn send_ping_response(&mut self, timestamp: u32) -> Result<()> {
+        self.send_user_control(UserControlEvent::PingResponse(timestamp))
+            .await
+    }
+}
+
+use bytes::Buf;
