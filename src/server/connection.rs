@@ -149,59 +149,81 @@ impl<H: RtmpHandler> Connection<H> {
         // Main message loop
         let idle_timeout = self.config.idle_timeout;
         let result = loop {
-            // Use select! to handle both TCP input and broadcast frames
-            tokio::select! {
-                // Read from TCP (existing functionality)
-                result = timeout(idle_timeout, self.read_and_process()) => {
-                    match result {
-                        Ok(Ok(true)) => continue,
-                        Ok(Ok(false)) => break Ok(()), // Clean disconnect
-                        Ok(Err(e)) => {
-                            tracing::debug!(error = %e, "Processing error");
-                            break Err(e);
-                        }
-                        Err(_) => {
-                            tracing::debug!("Idle timeout");
-                            break Ok(());
-                        }
-                    }
-                }
+            // Handle subscriber mode: take frame_rx out to avoid borrow conflicts
+            let mut frame_rx = self.frame_rx.take();
 
-                // Receive broadcast frames for subscribers
-                frame_result = async {
-                    match &mut self.frame_rx {
-                        Some(rx) => Some(rx.recv().await),
-                        None => {
-                            // No receiver, just sleep forever (never completes)
-                            std::future::pending::<Option<_>>().await
-                        }
-                    }
-                } => {
-                    if let Some(result) = frame_result {
-                        match result {
+            // Use select! to handle both TCP input and broadcast frames
+            let loop_result = if let Some(ref mut rx) = frame_rx {
+                // Subscriber mode: listen for both TCP and broadcast frames
+                tokio::select! {
+                    biased;
+
+                    // Receive broadcast frames for subscribers (higher priority)
+                    frame_result = rx.recv() => {
+                        match frame_result {
                             Ok(frame) => {
+                                // Put receiver back before processing
+                                self.frame_rx = frame_rx;
                                 // Reset lag count on successful receive
                                 self.consecutive_lag_count = 0;
                                 if let Err(e) = self.send_broadcast_frame(frame).await {
                                     tracing::debug!(error = %e, "Failed to send frame");
-                                    break Err(e);
+                                    Err(e)
+                                } else {
+                                    Ok(true)
                                 }
                             }
                             Err(broadcast::error::RecvError::Lagged(n)) => {
-                                if let Err(e) = self.handle_lag(n).await {
-                                    break Err(e);
-                                }
+                                self.frame_rx = frame_rx;
+                                self.handle_lag(n).await.map(|_| true)
                             }
                             Err(broadcast::error::RecvError::Closed) => {
+                                self.frame_rx = frame_rx;
                                 // Publisher ended, notify subscriber
                                 if let Err(e) = self.handle_stream_ended().await {
                                     tracing::debug!(error = %e, "Error handling stream end");
                                 }
-                                break Ok(());
+                                Ok(false) // Signal to exit loop
+                            }
+                        }
+                    }
+
+                    // Read from TCP
+                    result = timeout(idle_timeout, self.read_and_process()) => {
+                        self.frame_rx = frame_rx;
+                        match result {
+                            Ok(Ok(continue_loop)) => Ok(continue_loop),
+                            Ok(Err(e)) => {
+                                tracing::debug!(error = %e, "Processing error");
+                                Err(e)
+                            }
+                            Err(_) => {
+                                tracing::debug!("Idle timeout");
+                                Ok(false)
                             }
                         }
                     }
                 }
+            } else {
+                // Publisher mode: only listen for TCP
+                self.frame_rx = frame_rx;
+                match timeout(idle_timeout, self.read_and_process()).await {
+                    Ok(Ok(continue_loop)) => Ok(continue_loop),
+                    Ok(Err(e)) => {
+                        tracing::debug!(error = %e, "Processing error");
+                        Err(e)
+                    }
+                    Err(_) => {
+                        tracing::debug!("Idle timeout");
+                        Ok(false)
+                    }
+                }
+            };
+
+            match loop_result {
+                Ok(true) => continue,
+                Ok(false) => break Ok(()),
+                Err(e) => break Err(e),
             }
         };
 
@@ -648,7 +670,7 @@ impl<H: RtmpHandler> Connection<H> {
         match result {
             AuthResult::Accept => {
                 // Create stream key for registry
-                let app = self.context.app.clone().unwrap_or_default();
+                let app = self.context.app.clone();
                 let registry_key = StreamKey::new(&app, &stream_key);
 
                 // Register as publisher in the registry
@@ -752,7 +774,7 @@ impl<H: RtmpHandler> Connection<H> {
         match result {
             AuthResult::Accept => {
                 // Create stream key for registry
-                let app = self.context.app.clone().unwrap_or_default();
+                let app = self.context.app.clone();
                 let registry_key = StreamKey::new(&app, &stream_name);
 
                 // Subscribe to the stream in registry

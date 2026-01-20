@@ -1,13 +1,29 @@
-//! Simple RTMP server example
+//! Simple RTMP server example with pub/sub support
 //!
 //! Run with: cargo run --example simple_server
 //!
-//! Test with OBS:
+//! ## Publishing (send stream)
+//!
+//! With OBS:
 //!   Server: rtmp://localhost/live
 //!   Stream Key: test_key
 //!
-//! Test with ffmpeg:
+//! With ffmpeg:
 //!   ffmpeg -re -i input.mp4 -c copy -f flv rtmp://localhost/live/test_key
+//!
+//! ## Playing (receive stream)
+//!
+//! With VLC:
+//!   vlc rtmp://localhost/live/test_key
+//!
+//! With ffplay:
+//!   ffplay rtmp://localhost/live/test_key
+//!
+//! ## Features
+//!
+//! - Late-joiner support: Players joining after stream starts receive sequence headers + GOP
+//! - Publisher reconnect: If publisher disconnects, stream stays alive for 10s grace period
+//! - Backpressure: Slow subscribers skip to next keyframe instead of buffering indefinitely
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -204,12 +220,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Starting RTMP server on {}", config.bind_addr);
     println!();
-    println!("Test with OBS:");
-    println!("  Server: rtmp://localhost/live");
-    println!("  Stream Key: your_stream_key");
+    println!("=== Publish a stream ===");
+    println!("OBS:    Server: rtmp://localhost/live  Stream Key: test");
+    println!("ffmpeg: ffmpeg -re -i input.mp4 -c copy -f flv rtmp://localhost/live/test");
     println!();
-    println!("Test with ffmpeg:");
-    println!("  ffmpeg -re -i input.mp4 -c copy -f flv rtmp://localhost/live/test");
+    println!("=== Play a stream ===");
+    println!("VLC:    vlc rtmp://localhost/live/test");
+    println!("ffplay: ffplay rtmp://localhost/live/test");
     println!();
 
     // Create and run server
