@@ -10,6 +10,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 
 use crate::error::Result;
+use crate::registry::{RegistryConfig, StreamRegistry};
 use crate::server::config::ServerConfig;
 use crate::server::connection::Connection;
 use crate::server::handler::RtmpHandler;
@@ -18,6 +19,7 @@ use crate::server::handler::RtmpHandler;
 pub struct RtmpServer<H: RtmpHandler> {
     config: ServerConfig,
     handler: Arc<H>,
+    registry: Arc<StreamRegistry>,
     next_session_id: AtomicU64,
     connection_semaphore: Option<Arc<Semaphore>>,
 }
@@ -25,6 +27,15 @@ pub struct RtmpServer<H: RtmpHandler> {
 impl<H: RtmpHandler> RtmpServer<H> {
     /// Create a new server with the given configuration and handler
     pub fn new(config: ServerConfig, handler: H) -> Self {
+        Self::with_registry_config(config, handler, RegistryConfig::default())
+    }
+
+    /// Create a new server with custom registry configuration
+    pub fn with_registry_config(
+        config: ServerConfig,
+        handler: H,
+        registry_config: RegistryConfig,
+    ) -> Self {
         let connection_semaphore = if config.max_connections > 0 {
             Some(Arc::new(Semaphore::new(config.max_connections)))
         } else {
@@ -34,9 +45,15 @@ impl<H: RtmpHandler> RtmpServer<H> {
         Self {
             config,
             handler: Arc::new(handler),
+            registry: Arc::new(StreamRegistry::with_config(registry_config)),
             next_session_id: AtomicU64::new(1),
             connection_semaphore,
         }
+    }
+
+    /// Get a reference to the stream registry
+    pub fn registry(&self) -> &Arc<StreamRegistry> {
+        &self.registry
     }
 
     /// Run the server
@@ -45,6 +62,9 @@ impl<H: RtmpHandler> RtmpServer<H> {
     pub async fn run(&self) -> Result<()> {
         let listener = TcpListener::bind(self.config.bind_addr).await?;
         tracing::info!(addr = %self.config.bind_addr, "RTMP server listening");
+
+        // Spawn cleanup task for stream registry
+        let _cleanup_handle = self.registry.spawn_cleanup_task();
 
         loop {
             match listener.accept().await {
@@ -66,13 +86,21 @@ impl<H: RtmpHandler> RtmpServer<H> {
         let listener = TcpListener::bind(self.config.bind_addr).await?;
         tracing::info!(addr = %self.config.bind_addr, "RTMP server listening");
 
-        tokio::select! {
+        // Spawn cleanup task for stream registry
+        let cleanup_handle = self.registry.spawn_cleanup_task();
+
+        let result = tokio::select! {
             _ = shutdown => {
                 tracing::info!("Shutdown signal received");
                 Ok(())
             }
             result = self.accept_loop(&listener) => result,
-        }
+        };
+
+        // Stop cleanup task on shutdown
+        cleanup_handle.abort();
+
+        result
     }
 
     async fn accept_loop(&self, listener: &TcpListener) -> Result<()> {
@@ -120,6 +148,7 @@ impl<H: RtmpHandler> RtmpServer<H> {
         // Spawn connection handler
         let config = self.config.clone();
         let handler = Arc::clone(&self.handler);
+        let registry = Arc::clone(&self.registry);
 
         tokio::spawn(async move {
             let mut connection = Connection::new(
@@ -128,6 +157,7 @@ impl<H: RtmpHandler> RtmpServer<H> {
                 peer_addr,
                 config,
                 handler,
+                registry,
             );
 
             if let Err(e) = connection.run().await {
