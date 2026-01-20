@@ -647,6 +647,31 @@ impl<H: RtmpHandler> Connection<H> {
 
         match result {
             AuthResult::Accept => {
+                // Create stream key for registry
+                let app = self.context.app.clone().unwrap_or_default();
+                let registry_key = StreamKey::new(&app, &stream_key);
+
+                // Register as publisher in the registry
+                if let Err(e) = self.registry.register_publisher(&registry_key, self.state.id).await {
+                    tracing::warn!(
+                        session_id = self.state.id,
+                        stream = %registry_key,
+                        error = %e,
+                        "Failed to register publisher"
+                    );
+                    let status = Command::on_status(
+                        cmd.stream_id,
+                        "error",
+                        NS_PUBLISH_BAD_NAME,
+                        &format!("Stream already publishing: {}", e),
+                    );
+                    self.send_command(CSID_COMMAND, cmd.stream_id, &status).await?;
+                    return Err(Error::Rejected(format!("Stream already publishing: {}", e)));
+                }
+
+                // Track that we're publishing to this stream
+                self.publishing_to = Some(registry_key);
+
                 // Update stream state
                 if let Some(stream) = self.state.get_stream_mut(cmd.stream_id) {
                     stream.start_publish(stream_key.clone(), publish_type);
