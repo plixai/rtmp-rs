@@ -115,6 +115,14 @@ impl ChunkDecoder {
             None => return Ok(None),
         };
 
+        tracing::trace!(
+            fmt = fmt,
+            csid = csid,
+            header_len = header_len,
+            first_byte = format!("0x{:02x}", buf[0]),
+            "Parsing chunk"
+        );
+
         // Get or create chunk stream state
         let state = self.streams.entry(csid).or_default();
 

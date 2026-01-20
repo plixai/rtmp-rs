@@ -143,8 +143,11 @@ impl<H: RtmpHandler> Connection<H> {
         self.handler.on_handshake_complete(&self.context).await;
 
         // Set our chunk size
+        tracing::debug!(session_id = self.state.id, chunk_size = self.config.chunk_size, "Sending set chunk size");
         self.send_set_chunk_size(self.config.chunk_size).await?;
         self.chunk_encoder.set_chunk_size(self.config.chunk_size);
+
+        tracing::debug!(session_id = self.state.id, "Entering main message loop");
 
         // Main message loop
         let idle_timeout = self.config.idle_timeout;
@@ -347,13 +350,17 @@ impl<H: RtmpHandler> Connection<H> {
 
                 // Process handshake
                 let mut buf = Bytes::copy_from_slice(&self.read_buf);
-                if let Some(response) = handshake.process(&mut buf)? {
-                    // Consume processed bytes
-                    let consumed = self.read_buf.len() - buf.len();
-                    self.read_buf.advance(consumed);
+                let response = handshake.process(&mut buf)?;
 
-                    // Send response (S0S1S2 or nothing)
-                    self.writer.write_all(&response).await?;
+                // Always consume processed bytes (even if no response to send)
+                let consumed = self.read_buf.len() - buf.len();
+                if consumed > 0 {
+                    self.read_buf.advance(consumed);
+                }
+
+                // Send response if any (S0S1S2 for C0C1, nothing for C2)
+                if let Some(data) = response {
+                    self.writer.write_all(&data).await?;
                     self.writer.flush().await?;
                 }
 
@@ -368,17 +375,48 @@ impl<H: RtmpHandler> Connection<H> {
         .map_err(|_| Error::Timeout)??;
 
         self.state.complete_handshake();
-        tracing::debug!(session_id = self.state.id, "Handshake complete");
+        tracing::debug!(
+            session_id = self.state.id,
+            remaining_buf = self.read_buf.len(),
+            "Handshake complete"
+        );
+
+        // Debug: dump first 32 bytes of remaining buffer
+        if !self.read_buf.is_empty() {
+            let dump_len = self.read_buf.len().min(32);
+            let hex: String = self.read_buf[..dump_len]
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
+            tracing::debug!(
+                session_id = self.state.id,
+                first_bytes = %hex,
+                "Buffer after handshake"
+            );
+        }
 
         Ok(())
     }
 
     /// Read data and process messages
     async fn read_and_process(&mut self) -> Result<bool> {
+        tracing::trace!(
+            session_id = self.state.id,
+            buf_len = self.read_buf.len(),
+            "read_and_process called"
+        );
+
         // First, try to decode any complete chunks already in buffer
         // This handles data that arrived during handshake (e.g., connect command)
         let mut processed = false;
         while let Some(chunk) = self.chunk_decoder.decode(&mut self.read_buf)? {
+            tracing::debug!(
+                session_id = self.state.id,
+                csid = chunk.csid,
+                msg_type = chunk.message_type,
+                "Decoded chunk from buffer"
+            );
             self.handle_chunk(chunk).await?;
             processed = true;
         }
@@ -388,16 +426,35 @@ impl<H: RtmpHandler> Connection<H> {
             return Ok(true);
         }
 
+        tracing::trace!(
+            session_id = self.state.id,
+            buf_len = self.read_buf.len(),
+            "Waiting for more data"
+        );
+
         // No complete chunks in buffer - wait for more data
         let n = self.reader.read_buf(&mut self.read_buf).await?;
         if n == 0 {
             return Ok(false); // Connection closed
         }
 
+        tracing::trace!(
+            session_id = self.state.id,
+            bytes_read = n,
+            buf_len = self.read_buf.len(),
+            "Read data from socket"
+        );
+
         let needs_ack = self.state.add_bytes_received(n as u64);
 
         // Try to decode chunks with the new data
         while let Some(chunk) = self.chunk_decoder.decode(&mut self.read_buf)? {
+            tracing::debug!(
+                session_id = self.state.id,
+                csid = chunk.csid,
+                msg_type = chunk.message_type,
+                "Decoded chunk after read"
+            );
             self.handle_chunk(chunk).await?;
         }
 
