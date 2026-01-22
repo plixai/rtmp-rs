@@ -189,3 +189,179 @@ impl fmt::Display for MediaError {
 }
 
 impl std::error::Error for MediaError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    #[test]
+    fn test_error_display() {
+        // Test Error::Io display
+        let io_err = io::Error::new(io::ErrorKind::ConnectionReset, "connection reset");
+        let err = Error::Io(io_err);
+        assert!(err.to_string().contains("I/O error"));
+
+        // Test Error::Protocol display
+        let err = Error::Protocol(ProtocolError::InvalidChunkHeader);
+        assert!(err.to_string().contains("Protocol error"));
+        assert!(err.to_string().contains("Invalid chunk header"));
+
+        // Test Error::Amf display
+        let err = Error::Amf(AmfError::UnknownMarker(0xFF));
+        assert!(err.to_string().contains("AMF error"));
+        assert!(err.to_string().contains("0xff"));
+
+        // Test Error::Handshake display
+        let err = Error::Handshake(HandshakeError::InvalidVersion(5));
+        assert!(err.to_string().contains("Handshake error"));
+        assert!(err.to_string().contains("5"));
+
+        // Test Error::Media display
+        let err = Error::Media(MediaError::UnsupportedCodec("VP9".into()));
+        assert!(err.to_string().contains("Media error"));
+        assert!(err.to_string().contains("VP9"));
+
+        // Test Error::Rejected display
+        let err = Error::Rejected("stream key invalid".into());
+        assert!(err.to_string().contains("Connection rejected"));
+        assert!(err.to_string().contains("stream key invalid"));
+
+        // Test Error::Timeout display
+        let err = Error::Timeout;
+        assert!(err.to_string().contains("timed out"));
+
+        // Test Error::ConnectionClosed display
+        let err = Error::ConnectionClosed;
+        assert!(err.to_string().contains("closed"));
+
+        // Test Error::Config display
+        let err = Error::Config("invalid port".into());
+        assert!(err.to_string().contains("Configuration error"));
+    }
+
+    #[test]
+    fn test_error_source() {
+        // Only Io error should have a source
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "file not found");
+        let err = Error::Io(io_err);
+        assert!(err.source().is_some());
+
+        // Other errors should not have a source
+        let err = Error::Protocol(ProtocolError::InvalidChunkHeader);
+        assert!(err.source().is_none());
+
+        let err = Error::Timeout;
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn test_from_conversions() {
+        // Test From<io::Error>
+        let io_err = io::Error::new(io::ErrorKind::TimedOut, "timeout");
+        let err: Error = io_err.into();
+        assert!(matches!(err, Error::Io(_)));
+
+        // Test From<ProtocolError>
+        let proto_err = ProtocolError::MessageTooLarge { size: 100, max: 50 };
+        let err: Error = proto_err.into();
+        assert!(matches!(err, Error::Protocol(_)));
+
+        // Test From<AmfError>
+        let amf_err = AmfError::UnexpectedEof;
+        let err: Error = amf_err.into();
+        assert!(matches!(err, Error::Amf(_)));
+
+        // Test From<HandshakeError>
+        let hs_err = HandshakeError::DigestMismatch;
+        let err: Error = hs_err.into();
+        assert!(matches!(err, Error::Handshake(_)));
+
+        // Test From<MediaError>
+        let media_err = MediaError::InvalidFlvTag;
+        let err: Error = media_err.into();
+        assert!(matches!(err, Error::Media(_)));
+    }
+
+    #[test]
+    fn test_protocol_error_display() {
+        assert!(ProtocolError::InvalidChunkHeader
+            .to_string()
+            .contains("Invalid chunk header"));
+
+        assert!(ProtocolError::UnknownMessageType(99)
+            .to_string()
+            .contains("99"));
+
+        let err = ProtocolError::MessageTooLarge {
+            size: 1000,
+            max: 500,
+        };
+        assert!(err.to_string().contains("1000"));
+        assert!(err.to_string().contains("500"));
+
+        assert!(ProtocolError::InvalidChunkStreamId(123)
+            .to_string()
+            .contains("123"));
+
+        assert!(ProtocolError::UnexpectedMessage("test".into())
+            .to_string()
+            .contains("test"));
+
+        assert!(ProtocolError::MissingField("app".into())
+            .to_string()
+            .contains("app"));
+
+        assert!(ProtocolError::InvalidCommand("bad".into())
+            .to_string()
+            .contains("bad"));
+
+        assert!(ProtocolError::StreamNotFound(5).to_string().contains("5"));
+    }
+
+    #[test]
+    fn test_amf_error_display() {
+        assert!(AmfError::UnknownMarker(0xAB).to_string().contains("0xab"));
+
+        assert!(AmfError::UnexpectedEof.to_string().contains("end of AMF"));
+
+        assert!(AmfError::InvalidUtf8.to_string().contains("UTF-8"));
+
+        assert!(AmfError::InvalidReference(42).to_string().contains("42"));
+
+        assert!(AmfError::NestingTooDeep.to_string().contains("deep"));
+
+        assert!(AmfError::InvalidObjectEnd.to_string().contains("end"));
+    }
+
+    #[test]
+    fn test_handshake_error_display() {
+        assert!(HandshakeError::InvalidVersion(10)
+            .to_string()
+            .contains("10"));
+
+        assert!(HandshakeError::DigestMismatch
+            .to_string()
+            .contains("digest"));
+
+        assert!(HandshakeError::InvalidState.to_string().contains("state"));
+
+        assert!(HandshakeError::ResponseMismatch
+            .to_string()
+            .contains("response"));
+    }
+
+    #[test]
+    fn test_media_error_display() {
+        assert!(MediaError::InvalidFlvTag.to_string().contains("FLV"));
+        assert!(MediaError::InvalidAvcPacket.to_string().contains("AVC"));
+        assert!(MediaError::InvalidAacPacket.to_string().contains("AAC"));
+        assert!(MediaError::UnsupportedCodec("HEVC".into())
+            .to_string()
+            .contains("HEVC"));
+        assert!(MediaError::InvalidNalu.to_string().contains("NAL"));
+        assert!(MediaError::MissingSequenceHeader
+            .to_string()
+            .contains("sequence"));
+    }
+}

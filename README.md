@@ -1,31 +1,20 @@
 # rtmp-rs
 
-[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 
 **Async RTMP server and client library for Rust** - Build live video streaming infrastructure with Tokio.
 
-**rtmp-rs** is an RTMP server library written in Rust, built to handle the messy reality of live streaming. Encoders like OBS and FFmpeg all have their quirks, so rtmp-rs uses lenient parsing to roll with it instead of rejecting non-conforming streams. Late joiners get instant playback with keyframe caching, and backpressure handling keeps things smooth when subscribers go sluggish. If you're building a streaming service or relay and want RTMP ingest that just works, this might be what you're looking for.
-
-
-## AI disclaimer
-
-This repo is a Rust port of my [RTMP Go server](https://github.com/torresjeff/rtmp), which was my first time dabbling in video codecs and streaming. Almost all of the code in this Rust version was written by AI (Claude Opus 4.5).
-
-I recently had an idea that required an RTMP server, so I used it as an excuse to write some Rust and try out some agentic programming. This repo is partly an experiment to see how far I could get by vibecoding the entire thing with Claude Code. The answer? **Far!**
- 
-The whole thing took around 8 hours. It probably could have been faster if I auto-accepted edits without reading the code, but I like to review everything the agent generates. I started with Plan Mode to define the requirements, then moved on to implementation.
-
-That said, there was a tricky timestamp bug that caused audio/video stuttering, and Claude kept hallucinating answers instead of helping. After a deep-dive on my own, I found the root cause. I also noticed some parts of the code that could be improved, but I decided to keep things as-is for now. Any future improvements I'll have Claude handle.
+**rtmp-rs** is an RTMP server library written in Rust, built to handle the messy reality of live streaming. Encoders like OBS and FFmpeg all have their quirks, so rtmp-rs uses lenient parsing to roll with it instead of rejecting non-conforming streams. Late joiners get instant playback with keyframe caching, and smart backpressure handling keeps audio flowing for slow subscribers while selectively dropping video frames. If you're building a streaming service or relay and want RTMP ingest that just works, this might be what you're looking for.
 
 
 ## Features
 
 * **Async/Await** - Built on Tokio for high-performance concurrent connections
 * **Zero-Copy** - Uses `bytes::Bytes` throughout for efficient memory handling
+* **Backpressure Handling** - Slow subscribers drop video frames while audio keeps flowing, so viewers hear continuous sound instead of staring at a frozen buffer
 * **Pub/Sub** - Stream key routing with full publisher/subscriber support
 * **Late-Joiner GOP Cache** - Buffers keyframes so viewers don't wait for the next IDR frame
-* **Backpressure Handling** - Slow subscribers skip to the next keyframe
 * **Lenient Parsing** - Handles encoder quirks like empty app names and timestamp regression (OBS, Twitch compatible)
 * **Extensible** - Implement the `RtmpHandler` trait to add custom auth and media processing
 
@@ -153,6 +142,18 @@ ffmpeg -re -i test.mp4 -c copy -f flv rtmp://localhost/live/test_key
 # Play with ffplay
 ffplay rtmp://localhost/live/test_key
 ```
+
+
+## AI disclaimer
+
+This repo is a Rust rewrite of my [RTMP Go server](https://github.com/torresjeff/rtmp), which was my first time dabbling in video codecs and streaming. Almost all of the code in this Rust version was written by AI (Claude Opus 4.5).
+
+I recently had an idea that required an RTMP server, so I used it as an excuse to write some Rust and try out some agentic programming. This repo is partly an experiment to see how far I could get by vibecoding the entire thing with Claude Code. The answer? **Far!**
+ 
+The whole thing took around 8 hours. It probably could have been faster if I auto-accepted edits without reading the code, but I like to review everything the agent generates. I started with Plan Mode to define the requirements, then moved on to implementation.
+
+That said, there was a tricky timestamp bug that caused audio/video stuttering, and Claude kept hallucinating answers instead of helping. After a deep-dive on my own, I found the root cause. I also noticed some parts of the code that could be improved, but I decided to keep things as-is for now. Any future improvements I'll have Claude handle.
+
 
 ## License
 

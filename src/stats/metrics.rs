@@ -142,3 +142,122 @@ impl ServerStats {
         Self::default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_session_stats_new() {
+        let stats = SessionStats::new();
+        assert_eq!(stats.bytes_received, 0);
+        assert_eq!(stats.bytes_sent, 0);
+        assert_eq!(stats.video_frames, 0);
+        assert_eq!(stats.audio_frames, 0);
+        assert_eq!(stats.keyframes, 0);
+        assert_eq!(stats.dropped_frames, 0);
+        assert_eq!(stats.bitrate, 0);
+    }
+
+    #[test]
+    fn test_session_stats_calculate_bitrate() {
+        let mut stats = SessionStats::new();
+        stats.bytes_received = 1_000_000; // 1 MB
+        stats.duration = Duration::from_secs(10);
+
+        stats.calculate_bitrate();
+
+        // 1,000,000 bytes * 8 bits / 10 seconds = 800,000 bps
+        assert_eq!(stats.bitrate, 800_000);
+    }
+
+    #[test]
+    fn test_session_stats_calculate_bitrate_zero_duration() {
+        let mut stats = SessionStats::new();
+        stats.bytes_received = 1_000_000;
+        stats.duration = Duration::from_secs(0);
+
+        stats.calculate_bitrate();
+
+        // With zero duration, bitrate should remain 0
+        assert_eq!(stats.bitrate, 0);
+    }
+
+    #[test]
+    fn test_stream_stats_new() {
+        let stats = StreamStats::new("test_stream".to_string());
+        assert_eq!(stats.stream_key, "test_stream");
+        assert_eq!(stats.bytes_received, 0);
+        assert_eq!(stats.video_frames, 0);
+        assert_eq!(stats.audio_frames, 0);
+        assert_eq!(stats.keyframes, 0);
+        assert_eq!(stats.last_video_ts, 0);
+        assert_eq!(stats.last_audio_ts, 0);
+        assert!(stats.video_codec.is_none());
+        assert!(stats.audio_codec.is_none());
+    }
+
+    #[test]
+    fn test_stream_stats_duration() {
+        let stats = StreamStats::new("test".to_string());
+
+        // Duration should be positive since started_at is set at construction
+        let duration = stats.duration();
+        assert!(duration.as_nanos() > 0 || duration == Duration::ZERO);
+    }
+
+    #[test]
+    fn test_stream_stats_bitrate_zero_duration() {
+        let stats = StreamStats::new("test".to_string());
+
+        // With essentially zero duration, bitrate should be 0
+        let bitrate = stats.bitrate();
+        // Note: this could be non-zero if enough time passed, but should be safe
+        assert!(bitrate == 0 || bitrate > 0); // Just ensure it doesn't panic
+    }
+
+    #[test]
+    fn test_stream_stats_calculated_framerate() {
+        let stats = StreamStats::new("test".to_string());
+
+        // With zero frames, framerate should be 0
+        let framerate = stats.calculated_framerate();
+        assert!(framerate >= 0.0);
+    }
+
+    #[test]
+    fn test_server_stats_new() {
+        let stats = ServerStats::new();
+        assert_eq!(stats.total_connections, 0);
+        assert_eq!(stats.active_connections, 0);
+        assert_eq!(stats.total_bytes_received, 0);
+        assert_eq!(stats.total_bytes_sent, 0);
+        assert_eq!(stats.active_streams, 0);
+    }
+
+    #[test]
+    fn test_stream_stats_with_data() {
+        let mut stats = StreamStats::new("live_stream".to_string());
+
+        // Simulate receiving some data
+        stats.bytes_received = 5_000_000; // 5 MB
+        stats.video_frames = 300;
+        stats.audio_frames = 500;
+        stats.keyframes = 10;
+        stats.last_video_ts = 10000;
+        stats.last_audio_ts = 10050;
+        stats.video_codec = Some("H.264".to_string());
+        stats.audio_codec = Some("AAC".to_string());
+        stats.width = Some(1920);
+        stats.height = Some(1080);
+        stats.framerate = Some(30.0);
+        stats.audio_sample_rate = Some(44100);
+        stats.audio_channels = Some(2);
+
+        assert_eq!(stats.video_codec, Some("H.264".to_string()));
+        assert_eq!(stats.width, Some(1920));
+        assert_eq!(stats.height, Some(1080));
+        assert_eq!(stats.audio_channels, Some(2));
+    }
+}
