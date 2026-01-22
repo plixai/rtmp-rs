@@ -384,4 +384,320 @@ mod tests {
         assert_eq!(config.profile_name(), "High");
         assert_eq!(config.level_string(), "3.1");
     }
+
+    #[test]
+    fn test_avc_packet_type() {
+        assert_eq!(
+            AvcPacketType::from_byte(0),
+            Some(AvcPacketType::SequenceHeader)
+        );
+        assert_eq!(AvcPacketType::from_byte(1), Some(AvcPacketType::Nalu));
+        assert_eq!(
+            AvcPacketType::from_byte(2),
+            Some(AvcPacketType::EndOfSequence)
+        );
+        assert_eq!(AvcPacketType::from_byte(3), None);
+        assert_eq!(AvcPacketType::from_byte(255), None);
+    }
+
+    #[test]
+    fn test_nalu_type_parsing() {
+        // Test all documented NALU types
+        assert_eq!(NaluType::from_byte(0x01), Some(NaluType::Slice));
+        assert_eq!(NaluType::from_byte(0x02), Some(NaluType::SlicePartA));
+        assert_eq!(NaluType::from_byte(0x03), Some(NaluType::SlicePartB));
+        assert_eq!(NaluType::from_byte(0x04), Some(NaluType::SlicePartC));
+        assert_eq!(NaluType::from_byte(0x05), Some(NaluType::Idr));
+        assert_eq!(NaluType::from_byte(0x06), Some(NaluType::Sei));
+        assert_eq!(NaluType::from_byte(0x07), Some(NaluType::Sps));
+        assert_eq!(NaluType::from_byte(0x08), Some(NaluType::Pps));
+        assert_eq!(NaluType::from_byte(0x09), Some(NaluType::Aud));
+        assert_eq!(NaluType::from_byte(0x0A), Some(NaluType::EndSeq));
+        assert_eq!(NaluType::from_byte(0x0B), Some(NaluType::EndStream));
+        assert_eq!(NaluType::from_byte(0x0C), Some(NaluType::Filler));
+
+        // Test with forbidden_zero_bit and nal_ref_idc bits set
+        assert_eq!(NaluType::from_byte(0x65), Some(NaluType::Idr)); // 0x65 & 0x1F = 5
+        assert_eq!(NaluType::from_byte(0x67), Some(NaluType::Sps)); // 0x67 & 0x1F = 7
+    }
+
+    #[test]
+    fn test_nalu_type_is_keyframe() {
+        assert!(NaluType::Idr.is_keyframe());
+        assert!(!NaluType::Slice.is_keyframe());
+        assert!(!NaluType::Sps.is_keyframe());
+        assert!(!NaluType::Pps.is_keyframe());
+    }
+
+    #[test]
+    fn test_nalu_type_is_parameter_set() {
+        assert!(NaluType::Sps.is_parameter_set());
+        assert!(NaluType::Pps.is_parameter_set());
+        assert!(!NaluType::Idr.is_parameter_set());
+        assert!(!NaluType::Slice.is_parameter_set());
+    }
+
+    #[test]
+    fn test_h264_data_sequence_header() {
+        // Simulate parsing a sequence header packet
+        let data = Bytes::from_static(&[
+            0x00, // AVC sequence header
+            0x00, 0x00, 0x00, // composition time (0)
+            // AVCDecoderConfigurationRecord
+            0x01, 0x64, 0x00, 0x1F, 0xFF, // version, profile, compat, level, length-1
+            0xE1, // 1 SPS
+            0x00, 0x04, 0x67, 0x64, 0x00, 0x1F, // SPS
+            0x01, // 1 PPS
+            0x00, 0x03, 0x68, 0xEF, 0x38, // PPS
+        ]);
+
+        let h264 = H264Data::parse(data).unwrap();
+        assert!(h264.is_sequence_header());
+        assert!(h264.is_keyframe());
+
+        if let H264Data::SequenceHeader(config) = h264 {
+            assert_eq!(config.profile, 100);
+        } else {
+            panic!("Expected SequenceHeader");
+        }
+    }
+
+    #[test]
+    fn test_h264_data_end_of_sequence() {
+        let data = Bytes::from_static(&[
+            0x02, // End of sequence
+            0x00, 0x00, 0x00, // composition time
+        ]);
+
+        let h264 = H264Data::parse(data).unwrap();
+        assert!(matches!(h264, H264Data::EndOfSequence));
+        assert!(!h264.is_keyframe());
+        assert!(!h264.is_sequence_header());
+    }
+
+    #[test]
+    fn test_h264_data_nalu_keyframe() {
+        // Create NALU data with IDR frame
+        let data = Bytes::from_static(&[
+            0x01, // AVC NALU
+            0x00, 0x00, 0x00, // composition time (0)
+            // NALU with length prefix
+            0x00, 0x00, 0x00, 0x05, // length = 5
+            0x65, 0x88, 0x84, 0x00, 0x00, // IDR NALU (type 5)
+        ]);
+
+        let h264 = H264Data::parse(data).unwrap();
+        assert!(h264.is_keyframe());
+        assert!(!h264.is_sequence_header());
+
+        if let H264Data::Frame {
+            keyframe,
+            composition_time,
+            ..
+        } = h264
+        {
+            assert!(keyframe);
+            assert_eq!(composition_time, 0);
+        } else {
+            panic!("Expected Frame");
+        }
+    }
+
+    #[test]
+    fn test_h264_data_nalu_p_frame() {
+        // Create NALU data with non-IDR slice
+        let data = Bytes::from_static(&[
+            0x01, // AVC NALU
+            0x00, 0x00, 0x00, // composition time
+            // NALU with length prefix
+            0x00, 0x00, 0x00, 0x05, // length = 5
+            0x41, 0x9A, 0x00, 0x00, 0x00, // Non-IDR slice (type 1)
+        ]);
+
+        let h264 = H264Data::parse(data).unwrap();
+        assert!(!h264.is_keyframe());
+
+        if let H264Data::Frame { keyframe, .. } = h264 {
+            assert!(!keyframe);
+        }
+    }
+
+    #[test]
+    fn test_h264_composition_time_positive() {
+        let data = Bytes::from_static(&[
+            0x01, // AVC NALU
+            0x00, 0x01, 0x00, // composition time = 256
+            0x00, 0x00, 0x00, 0x01, // length
+            0x41, // Non-IDR
+        ]);
+
+        let h264 = H264Data::parse(data).unwrap();
+        if let H264Data::Frame {
+            composition_time, ..
+        } = h264
+        {
+            assert_eq!(composition_time, 256);
+        }
+    }
+
+    #[test]
+    fn test_h264_composition_time_negative() {
+        // Negative composition time (sign-extended from 24 bits)
+        let data = Bytes::from_static(&[
+            0x01, // AVC NALU
+            0xFF, 0xFF, 0x00, // composition time = -256 (as signed 24-bit)
+            0x00, 0x00, 0x00, 0x01, // length
+            0x41, // Non-IDR
+        ]);
+
+        let h264 = H264Data::parse(data).unwrap();
+        if let H264Data::Frame {
+            composition_time, ..
+        } = h264
+        {
+            assert_eq!(composition_time, -256);
+        }
+    }
+
+    #[test]
+    fn test_h264_data_invalid_packet_type() {
+        let data = Bytes::from_static(&[
+            0x03, // Invalid packet type
+            0x00, 0x00, 0x00,
+        ]);
+
+        let result = H264Data::parse(data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_h264_data_too_short() {
+        let data = Bytes::from_static(&[0x00, 0x00]); // Less than 4 bytes
+        let result = H264Data::parse(data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_avc_config_profile_names() {
+        // Test various profile names
+        let profiles = [
+            (66, "Baseline"),
+            (77, "Main"),
+            (88, "Extended"),
+            (100, "High"),
+            (110, "High 10"),
+            (122, "High 4:2:2"),
+            (244, "High 4:4:4"),
+            (99, "Unknown"),
+        ];
+
+        for (profile, expected_name) in profiles {
+            let config = AvcConfig {
+                profile,
+                compatibility: 0,
+                level: 31,
+                nalu_length_size: 4,
+                sps: vec![],
+                pps: vec![],
+            };
+            assert_eq!(config.profile_name(), expected_name);
+        }
+    }
+
+    #[test]
+    fn test_avc_config_level_string() {
+        let config = AvcConfig {
+            profile: 100,
+            compatibility: 0,
+            level: 41, // Level 4.1
+            nalu_length_size: 4,
+            sps: vec![],
+            pps: vec![],
+        };
+        assert_eq!(config.level_string(), "4.1");
+
+        let config2 = AvcConfig {
+            profile: 100,
+            compatibility: 0,
+            level: 52, // Level 5.2
+            nalu_length_size: 4,
+            sps: vec![],
+            pps: vec![],
+        };
+        assert_eq!(config2.level_string(), "5.2");
+    }
+
+    #[test]
+    fn test_avc_config_invalid_version() {
+        let data = Bytes::from_static(&[
+            0x02, // Invalid version (should be 1)
+            0x64, 0x00, 0x1F, 0xFF, 0xE1, 0x00, 0x04, 0x67, 0x64, 0x00, 0x1F, 0x01, 0x00, 0x03,
+            0x68, 0xEF, 0x38,
+        ]);
+
+        let result = AvcConfig::parse(data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_avc_config_too_short() {
+        let data = Bytes::from_static(&[0x01, 0x64, 0x00]); // Less than 7 bytes
+        let result = AvcConfig::parse(data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_nalu_iterator() {
+        // Create AVCC-format data with multiple NALUs
+        let data: &[u8] = &[
+            0x00, 0x00, 0x00, 0x03, // length = 3
+            0x67, 0x64, 0x00, // SPS NALU
+            0x00, 0x00, 0x00, 0x02, // length = 2
+            0x68, 0xEF, // PPS NALU
+        ];
+
+        let mut iter = NaluIterator::new(data, 4);
+
+        let nalu1 = iter.next().unwrap();
+        assert_eq!(nalu1.len(), 3);
+        assert_eq!(NaluType::from_byte(nalu1[0]), Some(NaluType::Sps));
+
+        let nalu2 = iter.next().unwrap();
+        assert_eq!(nalu2.len(), 2);
+        assert_eq!(NaluType::from_byte(nalu2[0]), Some(NaluType::Pps));
+
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_nalu_iterator_different_length_sizes() {
+        // Test with 2-byte length prefix
+        let data: &[u8] = &[
+            0x00, 0x02, // length = 2
+            0x65, 0x88, // IDR NALU
+        ];
+
+        let mut iter = NaluIterator::new(data, 2);
+        let nalu = iter.next().unwrap();
+        assert_eq!(nalu.len(), 2);
+    }
+
+    #[test]
+    fn test_nalu_iterator_empty() {
+        let data: &[u8] = &[];
+        let mut iter = NaluIterator::new(data, 4);
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_nalu_iterator_truncated() {
+        // Length says 10 bytes but only 3 available
+        let data: &[u8] = &[
+            0x00, 0x00, 0x00, 0x0A, // length = 10
+            0x67, 0x64, 0x00, // Only 3 bytes
+        ];
+
+        let mut iter = NaluIterator::new(data, 4);
+        assert!(iter.next().is_none()); // Should return None for truncated data
+    }
 }

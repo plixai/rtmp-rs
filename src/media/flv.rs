@@ -327,4 +327,253 @@ mod tests {
         let frame = FlvTag::audio(0, Bytes::from_static(&[0xAF, 0x01, 0x21, 0x00]));
         assert!(!frame.is_aac_sequence_header());
     }
+
+    #[test]
+    fn test_video_frame_type_all_values() {
+        assert_eq!(
+            VideoFrameType::from_byte(0x10),
+            Some(VideoFrameType::Keyframe)
+        );
+        assert_eq!(
+            VideoFrameType::from_byte(0x20),
+            Some(VideoFrameType::InterFrame)
+        );
+        assert_eq!(
+            VideoFrameType::from_byte(0x30),
+            Some(VideoFrameType::DisposableInterFrame)
+        );
+        assert_eq!(
+            VideoFrameType::from_byte(0x40),
+            Some(VideoFrameType::GeneratedKeyframe)
+        );
+        assert_eq!(
+            VideoFrameType::from_byte(0x50),
+            Some(VideoFrameType::VideoInfoFrame)
+        );
+        assert_eq!(VideoFrameType::from_byte(0x00), None);
+        assert_eq!(VideoFrameType::from_byte(0x60), None);
+    }
+
+    #[test]
+    fn test_video_frame_type_is_keyframe() {
+        assert!(VideoFrameType::Keyframe.is_keyframe());
+        assert!(VideoFrameType::GeneratedKeyframe.is_keyframe());
+        assert!(!VideoFrameType::InterFrame.is_keyframe());
+        assert!(!VideoFrameType::DisposableInterFrame.is_keyframe());
+        assert!(!VideoFrameType::VideoInfoFrame.is_keyframe());
+    }
+
+    #[test]
+    fn test_video_codec_all_values() {
+        assert_eq!(VideoCodec::from_byte(0x02), Some(VideoCodec::SorensonH263));
+        assert_eq!(VideoCodec::from_byte(0x03), Some(VideoCodec::ScreenVideo));
+        assert_eq!(VideoCodec::from_byte(0x04), Some(VideoCodec::Vp6));
+        assert_eq!(VideoCodec::from_byte(0x05), Some(VideoCodec::Vp6Alpha));
+        assert_eq!(VideoCodec::from_byte(0x06), Some(VideoCodec::ScreenVideoV2));
+        assert_eq!(VideoCodec::from_byte(0x07), Some(VideoCodec::Avc));
+        assert_eq!(VideoCodec::from_byte(0x0C), Some(VideoCodec::Hevc));
+        assert_eq!(VideoCodec::from_byte(0x0D), Some(VideoCodec::Av1));
+        assert_eq!(VideoCodec::from_byte(0x00), None);
+        assert_eq!(VideoCodec::from_byte(0x01), None);
+        assert_eq!(VideoCodec::from_byte(0x08), None);
+    }
+
+    #[test]
+    fn test_audio_format_all_values() {
+        assert_eq!(
+            AudioFormat::from_byte(0x00),
+            Some(AudioFormat::LinearPcmPlatform)
+        );
+        assert_eq!(AudioFormat::from_byte(0x10), Some(AudioFormat::Adpcm));
+        assert_eq!(AudioFormat::from_byte(0x20), Some(AudioFormat::Mp3));
+        assert_eq!(AudioFormat::from_byte(0x30), Some(AudioFormat::LinearPcmLe));
+        assert_eq!(
+            AudioFormat::from_byte(0x40),
+            Some(AudioFormat::Nellymoser16kMono)
+        );
+        assert_eq!(
+            AudioFormat::from_byte(0x50),
+            Some(AudioFormat::Nellymoser8kMono)
+        );
+        assert_eq!(AudioFormat::from_byte(0x60), Some(AudioFormat::Nellymoser));
+        assert_eq!(AudioFormat::from_byte(0x70), Some(AudioFormat::G711ALaw));
+        assert_eq!(AudioFormat::from_byte(0x80), Some(AudioFormat::G711MuLaw));
+        assert_eq!(AudioFormat::from_byte(0xA0), Some(AudioFormat::Aac));
+        assert_eq!(AudioFormat::from_byte(0xB0), Some(AudioFormat::Speex));
+        assert_eq!(AudioFormat::from_byte(0xE0), Some(AudioFormat::Mp38k));
+        assert_eq!(
+            AudioFormat::from_byte(0xF0),
+            Some(AudioFormat::DeviceSpecific)
+        );
+        assert_eq!(AudioFormat::from_byte(0x90), None); // 9 is not defined
+    }
+
+    #[test]
+    fn test_audio_sample_rate() {
+        assert_eq!(AudioSampleRate::from_byte(0x00).to_hz(), 5512);
+        assert_eq!(AudioSampleRate::from_byte(0x04).to_hz(), 11025);
+        assert_eq!(AudioSampleRate::from_byte(0x08).to_hz(), 22050);
+        assert_eq!(AudioSampleRate::from_byte(0x0C).to_hz(), 44100);
+        // Test masking
+        assert_eq!(AudioSampleRate::from_byte(0xFF).to_hz(), 44100);
+    }
+
+    #[test]
+    fn test_flv_tag_video_construction() {
+        let tag = FlvTag::video(1000, Bytes::from_static(&[0x17, 0x01]));
+        assert!(tag.is_video());
+        assert!(!tag.is_audio());
+        assert_eq!(tag.tag_type, FlvTagType::Video);
+        assert_eq!(tag.timestamp, 1000);
+    }
+
+    #[test]
+    fn test_flv_tag_audio_construction() {
+        let tag = FlvTag::audio(2000, Bytes::from_static(&[0xAF, 0x01]));
+        assert!(tag.is_audio());
+        assert!(!tag.is_video());
+        assert_eq!(tag.tag_type, FlvTagType::Audio);
+        assert_eq!(tag.timestamp, 2000);
+    }
+
+    #[test]
+    fn test_flv_tag_video_frame_type() {
+        // Keyframe AVC
+        let keyframe = FlvTag::video(0, Bytes::from_static(&[0x17, 0x01]));
+        assert_eq!(keyframe.video_frame_type(), Some(VideoFrameType::Keyframe));
+        assert!(keyframe.is_keyframe());
+
+        // Inter frame AVC
+        let interframe = FlvTag::video(0, Bytes::from_static(&[0x27, 0x01]));
+        assert_eq!(
+            interframe.video_frame_type(),
+            Some(VideoFrameType::InterFrame)
+        );
+        assert!(!interframe.is_keyframe());
+
+        // Audio tag should return None
+        let audio = FlvTag::audio(0, Bytes::from_static(&[0xAF, 0x01]));
+        assert!(audio.video_frame_type().is_none());
+    }
+
+    #[test]
+    fn test_flv_tag_video_codec() {
+        // AVC codec
+        let avc = FlvTag::video(0, Bytes::from_static(&[0x17, 0x01]));
+        assert_eq!(avc.video_codec(), Some(VideoCodec::Avc));
+
+        // HEVC codec (enhanced RTMP)
+        let hevc = FlvTag::video(0, Bytes::from_static(&[0x1C, 0x01]));
+        assert_eq!(hevc.video_codec(), Some(VideoCodec::Hevc));
+
+        // Audio should return None
+        let audio = FlvTag::audio(0, Bytes::from_static(&[0xAF]));
+        assert!(audio.video_codec().is_none());
+    }
+
+    #[test]
+    fn test_flv_tag_audio_format() {
+        // AAC audio
+        let aac = FlvTag::audio(0, Bytes::from_static(&[0xAF, 0x01]));
+        assert_eq!(aac.audio_format(), Some(AudioFormat::Aac));
+
+        // MP3 audio
+        let mp3 = FlvTag::audio(0, Bytes::from_static(&[0x2F]));
+        assert_eq!(mp3.audio_format(), Some(AudioFormat::Mp3));
+
+        // Video should return None
+        let video = FlvTag::video(0, Bytes::from_static(&[0x17]));
+        assert!(video.audio_format().is_none());
+    }
+
+    #[test]
+    fn test_flv_tag_empty_data() {
+        let empty_video = FlvTag::video(0, Bytes::new());
+        assert!(empty_video.video_frame_type().is_none());
+        assert!(empty_video.video_codec().is_none());
+        assert!(!empty_video.is_keyframe());
+        assert!(!empty_video.is_avc_sequence_header());
+
+        let empty_audio = FlvTag::audio(0, Bytes::new());
+        assert!(empty_audio.audio_format().is_none());
+        assert!(!empty_audio.is_aac_sequence_header());
+    }
+
+    #[test]
+    fn test_flv_tag_size() {
+        let tag = FlvTag::video(0, Bytes::from_static(&[0x17, 0x00, 0x00, 0x00, 0x00]));
+        assert_eq!(tag.size(), 5);
+
+        let empty_tag = FlvTag::audio(0, Bytes::new());
+        assert_eq!(empty_tag.size(), 0);
+    }
+
+    #[test]
+    fn test_is_avc_sequence_header_non_avc() {
+        // Non-AVC codec (e.g., HEVC)
+        let hevc = FlvTag::video(0, Bytes::from_static(&[0x1C, 0x00, 0x00, 0x00, 0x00]));
+        assert!(!hevc.is_avc_sequence_header());
+
+        // AVC but not sequence header (packet type 1)
+        let avc_nalu = FlvTag::video(0, Bytes::from_static(&[0x17, 0x01, 0x00, 0x00, 0x00]));
+        assert!(!avc_nalu.is_avc_sequence_header());
+    }
+
+    #[test]
+    fn test_is_aac_sequence_header_non_aac() {
+        // Non-AAC format (e.g., MP3)
+        let mp3 = FlvTag::audio(0, Bytes::from_static(&[0x2F, 0x00]));
+        assert!(!mp3.is_aac_sequence_header());
+
+        // AAC but raw frame (packet type 1)
+        let aac_raw = FlvTag::audio(0, Bytes::from_static(&[0xAF, 0x01]));
+        assert!(!aac_raw.is_aac_sequence_header());
+    }
+
+    #[test]
+    fn test_flv_tag_type_enum() {
+        assert_eq!(FlvTagType::Audio, FlvTagType::Audio);
+        assert_ne!(FlvTagType::Audio, FlvTagType::Video);
+        assert_ne!(FlvTagType::Video, FlvTagType::Script);
+    }
+
+    #[test]
+    fn test_combined_video_byte() {
+        // Test decoding both frame type and codec from same byte
+        // 0x17 = keyframe (1) + AVC (7)
+        let tag = FlvTag::video(0, Bytes::from_static(&[0x17]));
+        assert_eq!(tag.video_frame_type(), Some(VideoFrameType::Keyframe));
+        assert_eq!(tag.video_codec(), Some(VideoCodec::Avc));
+
+        // 0x27 = inter frame (2) + AVC (7)
+        let tag = FlvTag::video(0, Bytes::from_static(&[0x27]));
+        assert_eq!(tag.video_frame_type(), Some(VideoFrameType::InterFrame));
+        assert_eq!(tag.video_codec(), Some(VideoCodec::Avc));
+
+        // 0x14 = keyframe (1) + VP6 (4)
+        let tag = FlvTag::video(0, Bytes::from_static(&[0x14]));
+        assert_eq!(tag.video_frame_type(), Some(VideoFrameType::Keyframe));
+        assert_eq!(tag.video_codec(), Some(VideoCodec::Vp6));
+    }
+
+    #[test]
+    fn test_short_video_data() {
+        // Only 1 byte - enough for frame type and codec
+        let tag = FlvTag::video(0, Bytes::from_static(&[0x17]));
+        assert!(tag.video_frame_type().is_some());
+        assert!(tag.video_codec().is_some());
+
+        // But not enough for sequence header check (needs 2 bytes)
+        assert!(!tag.is_avc_sequence_header());
+    }
+
+    #[test]
+    fn test_short_audio_data() {
+        // Only 1 byte - enough for format
+        let tag = FlvTag::audio(0, Bytes::from_static(&[0xAF]));
+        assert!(tag.audio_format().is_some());
+
+        // But not enough for sequence header check (needs 2 bytes)
+        assert!(!tag.is_aac_sequence_header());
+    }
 }

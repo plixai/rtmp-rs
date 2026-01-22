@@ -629,4 +629,492 @@ mod tests {
             panic!("Expected Command message");
         }
     }
+
+    #[test]
+    fn test_set_chunk_size_message() {
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: MSG_SET_CHUNK_SIZE,
+            stream_id: 0,
+            payload: Bytes::from_static(&[0x00, 0x00, 0x10, 0x00]), // 4096
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        assert!(matches!(msg, RtmpMessage::SetChunkSize(4096)));
+
+        // Test encoding
+        let (msg_type, payload) = msg.encode();
+        assert_eq!(msg_type, MSG_SET_CHUNK_SIZE);
+        assert_eq!(&payload[..], &[0x00, 0x00, 0x10, 0x00]);
+    }
+
+    #[test]
+    fn test_abort_message() {
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: MSG_ABORT,
+            stream_id: 0,
+            payload: Bytes::from_static(&[0x00, 0x00, 0x00, 0x05]), // CSID 5
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        if let RtmpMessage::Abort { csid } = msg {
+            assert_eq!(csid, 5);
+        } else {
+            panic!("Expected Abort message");
+        }
+    }
+
+    #[test]
+    fn test_acknowledgement_message() {
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: MSG_ACKNOWLEDGEMENT,
+            stream_id: 0,
+            payload: Bytes::from_static(&[0x00, 0x10, 0x00, 0x00]), // 1048576
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        if let RtmpMessage::Acknowledgement { sequence } = msg {
+            assert_eq!(sequence, 1048576);
+        } else {
+            panic!("Expected Acknowledgement message");
+        }
+    }
+
+    #[test]
+    fn test_window_ack_size_message() {
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: MSG_WINDOW_ACK_SIZE,
+            stream_id: 0,
+            payload: Bytes::from_static(&[0x00, 0x26, 0x25, 0xA0]), // 2500000
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        if let RtmpMessage::WindowAckSize(size) = msg {
+            assert_eq!(size, 2500000);
+        } else {
+            panic!("Expected WindowAckSize message");
+        }
+    }
+
+    #[test]
+    fn test_set_peer_bandwidth_message() {
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: MSG_SET_PEER_BANDWIDTH,
+            stream_id: 0,
+            payload: Bytes::from_static(&[0x00, 0x26, 0x25, 0xA0, 0x02]), // 2500000, dynamic
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        if let RtmpMessage::SetPeerBandwidth { size, limit_type } = msg {
+            assert_eq!(size, 2500000);
+            assert_eq!(limit_type, BANDWIDTH_LIMIT_DYNAMIC);
+        } else {
+            panic!("Expected SetPeerBandwidth message");
+        }
+    }
+
+    #[test]
+    fn test_user_control_stream_begin() {
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: MSG_USER_CONTROL,
+            stream_id: 0,
+            payload: Bytes::from_static(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x01]), // StreamBegin, stream 1
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        if let RtmpMessage::UserControl(UserControlEvent::StreamBegin(id)) = msg {
+            assert_eq!(id, 1);
+        } else {
+            panic!("Expected StreamBegin user control");
+        }
+    }
+
+    #[test]
+    fn test_user_control_stream_eof() {
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: MSG_USER_CONTROL,
+            stream_id: 0,
+            payload: Bytes::from_static(&[0x00, 0x01, 0x00, 0x00, 0x00, 0x02]), // StreamEof, stream 2
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        if let RtmpMessage::UserControl(UserControlEvent::StreamEof(id)) = msg {
+            assert_eq!(id, 2);
+        } else {
+            panic!("Expected StreamEof user control");
+        }
+    }
+
+    #[test]
+    fn test_user_control_set_buffer_length() {
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: MSG_USER_CONTROL,
+            stream_id: 0,
+            payload: Bytes::from_static(&[
+                0x00, 0x03, // SetBufferLength
+                0x00, 0x00, 0x00, 0x01, // stream_id 1
+                0x00, 0x00, 0x03, 0xE8, // 1000ms
+            ]),
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        if let RtmpMessage::UserControl(UserControlEvent::SetBufferLength {
+            stream_id,
+            buffer_ms,
+        }) = msg
+        {
+            assert_eq!(stream_id, 1);
+            assert_eq!(buffer_ms, 1000);
+        } else {
+            panic!("Expected SetBufferLength user control");
+        }
+    }
+
+    #[test]
+    fn test_user_control_ping_request() {
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: MSG_USER_CONTROL,
+            stream_id: 0,
+            payload: Bytes::from_static(&[0x00, 0x06, 0x00, 0x01, 0x00, 0x00]), // PingRequest
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        if let RtmpMessage::UserControl(UserControlEvent::PingRequest(ts)) = msg {
+            assert_eq!(ts, 0x00010000);
+        } else {
+            panic!("Expected PingRequest user control");
+        }
+    }
+
+    #[test]
+    fn test_user_control_ping_response() {
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: MSG_USER_CONTROL,
+            stream_id: 0,
+            payload: Bytes::from_static(&[0x00, 0x07, 0x00, 0x00, 0x00, 0x64]), // PingResponse
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        if let RtmpMessage::UserControl(UserControlEvent::PingResponse(ts)) = msg {
+            assert_eq!(ts, 100);
+        } else {
+            panic!("Expected PingResponse user control");
+        }
+    }
+
+    #[test]
+    fn test_audio_message() {
+        let audio_data = Bytes::from_static(&[0xAF, 0x01, 0x21, 0x00, 0x00]);
+
+        let chunk = RtmpChunk {
+            csid: CSID_AUDIO,
+            timestamp: 1000,
+            message_type: MSG_AUDIO,
+            stream_id: 1,
+            payload: audio_data.clone(),
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        if let RtmpMessage::Audio { timestamp, data } = msg {
+            assert_eq!(timestamp, 1000);
+            assert_eq!(data, audio_data);
+        } else {
+            panic!("Expected Audio message");
+        }
+    }
+
+    #[test]
+    fn test_video_message() {
+        let video_data = Bytes::from_static(&[0x17, 0x01, 0x00, 0x00, 0x00, 0x00]);
+
+        let chunk = RtmpChunk {
+            csid: CSID_VIDEO,
+            timestamp: 2000,
+            message_type: MSG_VIDEO,
+            stream_id: 1,
+            payload: video_data.clone(),
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        if let RtmpMessage::Video { timestamp, data } = msg {
+            assert_eq!(timestamp, 2000);
+            assert_eq!(data, video_data);
+        } else {
+            panic!("Expected Video message");
+        }
+    }
+
+    #[test]
+    fn test_data_message() {
+        let mut encoder = Amf0Encoder::new();
+        encoder.encode(&AmfValue::String("@setDataFrame".into()));
+        encoder.encode(&AmfValue::String("onMetaData".into()));
+        let mut metadata = HashMap::new();
+        metadata.insert("width".to_string(), AmfValue::Number(1920.0));
+        encoder.encode(&AmfValue::Object(metadata));
+
+        let chunk = RtmpChunk {
+            csid: CSID_COMMAND,
+            timestamp: 0,
+            message_type: MSG_DATA_AMF0,
+            stream_id: 1,
+            payload: encoder.finish(),
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        if let RtmpMessage::Data(data) = msg {
+            assert_eq!(data.name, "@setDataFrame");
+            assert_eq!(data.stream_id, 1);
+            assert_eq!(data.values.len(), 2);
+        } else {
+            panic!("Expected Data message");
+        }
+    }
+
+    #[test]
+    fn test_unknown_message_type() {
+        let chunk = RtmpChunk {
+            csid: CSID_COMMAND,
+            timestamp: 0,
+            message_type: 99, // Unknown type
+            stream_id: 0,
+            payload: Bytes::from_static(b"unknown"),
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        if let RtmpMessage::Unknown { type_id, data } = msg {
+            assert_eq!(type_id, 99);
+            assert_eq!(data.as_ref(), b"unknown");
+        } else {
+            panic!("Expected Unknown message");
+        }
+    }
+
+    #[test]
+    fn test_command_result() {
+        let mut props = HashMap::new();
+        props.insert(
+            "fmsVer".to_string(),
+            AmfValue::String("FMS/3,5,7,7009".into()),
+        );
+        props.insert("capabilities".to_string(), AmfValue::Number(31.0));
+
+        let result = Command::result(1.0, AmfValue::Object(props), AmfValue::Null);
+
+        assert_eq!(result.name, "_result");
+        assert_eq!(result.transaction_id, 1.0);
+    }
+
+    #[test]
+    fn test_command_error() {
+        let error = Command::error(1.0, AmfValue::Null, AmfValue::String("error".into()));
+
+        assert_eq!(error.name, "_error");
+        assert_eq!(error.transaction_id, 1.0);
+    }
+
+    #[test]
+    fn test_command_on_status() {
+        let status = Command::on_status(1, "status", NS_PUBLISH_START, "Publishing started");
+
+        assert_eq!(status.name, "onStatus");
+        assert_eq!(status.transaction_id, 0.0);
+        assert_eq!(status.stream_id, 1);
+
+        if let Some(info) = status.arguments.first() {
+            if let AmfValue::Object(props) = info {
+                assert_eq!(props.get("level").unwrap().as_str(), Some("status"));
+                assert_eq!(props.get("code").unwrap().as_str(), Some(NS_PUBLISH_START));
+            } else {
+                panic!("Expected Object in arguments");
+            }
+        } else {
+            panic!("Expected arguments");
+        }
+    }
+
+    #[test]
+    fn test_connect_params_all_fields() {
+        let mut obj = HashMap::new();
+        obj.insert("app".to_string(), AmfValue::String("live".into()));
+        obj.insert(
+            "flashVer".to_string(),
+            AmfValue::String("OBS-Studio/29.0".into()),
+        );
+        obj.insert(
+            "swfUrl".to_string(),
+            AmfValue::String("rtmp://example.com/app".into()),
+        );
+        obj.insert(
+            "tcUrl".to_string(),
+            AmfValue::String("rtmp://example.com/live".into()),
+        );
+        obj.insert("fpad".to_string(), AmfValue::Boolean(false));
+        obj.insert("audioCodecs".to_string(), AmfValue::Number(3575.0));
+        obj.insert("videoCodecs".to_string(), AmfValue::Number(252.0));
+        obj.insert("videoFunction".to_string(), AmfValue::Number(1.0));
+        obj.insert(
+            "pageUrl".to_string(),
+            AmfValue::String("http://twitch.tv".into()),
+        );
+        obj.insert("objectEncoding".to_string(), AmfValue::Number(0.0));
+        obj.insert("custom".to_string(), AmfValue::String("value".into()));
+
+        let params = ConnectParams::from_amf(&AmfValue::Object(obj));
+
+        assert_eq!(params.app, "live");
+        assert_eq!(params.flash_ver, Some("OBS-Studio/29.0".into()));
+        assert_eq!(params.swf_url, Some("rtmp://example.com/app".into()));
+        assert_eq!(params.tc_url, Some("rtmp://example.com/live".into()));
+        assert!(!params.fpad);
+        assert_eq!(params.audio_codecs, 3575);
+        assert_eq!(params.video_codecs, 252);
+        assert_eq!(params.video_function, 1);
+        assert_eq!(params.page_url, Some("http://twitch.tv".into()));
+        assert_eq!(params.object_encoding, 0.0);
+        assert!(params.extra.contains_key("custom"));
+    }
+
+    #[test]
+    fn test_connect_params_case_insensitive() {
+        // Test lowercase variants
+        let mut obj = HashMap::new();
+        obj.insert("flashver".to_string(), AmfValue::String("test".into()));
+        obj.insert("tcurl".to_string(), AmfValue::String("url".into()));
+        obj.insert("pageurl".to_string(), AmfValue::String("page".into()));
+        obj.insert("swfurl".to_string(), AmfValue::String("swf".into()));
+
+        let params = ConnectParams::from_amf(&AmfValue::Object(obj));
+
+        assert_eq!(params.flash_ver, Some("test".into()));
+        assert_eq!(params.tc_url, Some("url".into()));
+        assert_eq!(params.page_url, Some("page".into()));
+        assert_eq!(params.swf_url, Some("swf".into()));
+    }
+
+    #[test]
+    fn test_connect_params_from_non_object() {
+        // Should handle non-object gracefully
+        let params = ConnectParams::from_amf(&AmfValue::Null);
+        assert_eq!(params.app, "");
+        assert!(params.flash_ver.is_none());
+    }
+
+    #[test]
+    fn test_message_encode_roundtrip() {
+        // Test various messages encode/decode roundtrip
+
+        // SetChunkSize
+        let msg = RtmpMessage::SetChunkSize(4096);
+        let (msg_type, payload) = msg.encode();
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: msg_type,
+            stream_id: 0,
+            payload,
+        };
+        let decoded = RtmpMessage::from_chunk(&chunk).unwrap();
+        assert!(matches!(decoded, RtmpMessage::SetChunkSize(4096)));
+
+        // WindowAckSize
+        let msg = RtmpMessage::WindowAckSize(2500000);
+        let (msg_type, payload) = msg.encode();
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: msg_type,
+            stream_id: 0,
+            payload,
+        };
+        let decoded = RtmpMessage::from_chunk(&chunk).unwrap();
+        assert!(matches!(decoded, RtmpMessage::WindowAckSize(2500000)));
+    }
+
+    #[test]
+    fn test_user_control_event_encode() {
+        // Test encoding of user control events
+        let events = vec![
+            RtmpMessage::UserControl(UserControlEvent::StreamBegin(1)),
+            RtmpMessage::UserControl(UserControlEvent::StreamEof(2)),
+            RtmpMessage::UserControl(UserControlEvent::StreamDry(3)),
+            RtmpMessage::UserControl(UserControlEvent::StreamIsRecorded(4)),
+            RtmpMessage::UserControl(UserControlEvent::PingRequest(5)),
+            RtmpMessage::UserControl(UserControlEvent::PingResponse(6)),
+            RtmpMessage::UserControl(UserControlEvent::SetBufferLength {
+                stream_id: 1,
+                buffer_ms: 1000,
+            }),
+        ];
+
+        for msg in events {
+            let (msg_type, payload) = msg.encode();
+            assert_eq!(msg_type, MSG_USER_CONTROL);
+            assert!(!payload.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_aggregate_message() {
+        let chunk = RtmpChunk {
+            csid: CSID_VIDEO,
+            timestamp: 0,
+            message_type: MSG_AGGREGATE,
+            stream_id: 1,
+            payload: Bytes::from_static(b"aggregate data"),
+        };
+
+        let msg = RtmpMessage::from_chunk(&chunk).unwrap();
+        if let RtmpMessage::Aggregate { data } = msg {
+            assert_eq!(data.as_ref(), b"aggregate data");
+        } else {
+            panic!("Expected Aggregate message");
+        }
+    }
+
+    #[test]
+    fn test_truncated_protocol_control_messages() {
+        // SetChunkSize with less than 4 bytes
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: MSG_SET_CHUNK_SIZE,
+            stream_id: 0,
+            payload: Bytes::from_static(&[0x00, 0x00]), // Only 2 bytes
+        };
+
+        let result = RtmpMessage::from_chunk(&chunk);
+        assert!(result.is_err());
+
+        // WindowAckSize with less than 4 bytes
+        let chunk = RtmpChunk {
+            csid: CSID_PROTOCOL_CONTROL,
+            timestamp: 0,
+            message_type: MSG_WINDOW_ACK_SIZE,
+            stream_id: 0,
+            payload: Bytes::from_static(&[0x00]),
+        };
+
+        let result = RtmpMessage::from_chunk(&chunk);
+        assert!(result.is_err());
+    }
 }

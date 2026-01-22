@@ -644,4 +644,309 @@ mod tests {
         let decoded = decode(&encoded).unwrap();
         assert_eq!(decoded, AmfValue::String(long_str));
     }
+
+    #[test]
+    fn test_undefined_roundtrip() {
+        let value = AmfValue::Undefined;
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_date_roundtrip() {
+        let timestamp = 1700000000000.0; // A specific timestamp
+        let value = AmfValue::Date(timestamp);
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, AmfValue::Date(timestamp));
+    }
+
+    #[test]
+    fn test_ecma_array_roundtrip() {
+        let mut props = HashMap::new();
+        props.insert("width".to_string(), AmfValue::Number(1920.0));
+        props.insert("height".to_string(), AmfValue::Number(1080.0));
+        props.insert("codec".to_string(), AmfValue::String("h264".into()));
+        let value = AmfValue::EcmaArray(props);
+
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+
+        if let AmfValue::EcmaArray(dec_props) = decoded {
+            assert_eq!(dec_props.len(), 3);
+            assert_eq!(dec_props.get("width").unwrap().as_number(), Some(1920.0));
+            assert_eq!(dec_props.get("height").unwrap().as_number(), Some(1080.0));
+            assert_eq!(dec_props.get("codec").unwrap().as_str(), Some("h264"));
+        } else {
+            panic!("Expected EcmaArray");
+        }
+    }
+
+    #[test]
+    fn test_typed_object_roundtrip() {
+        let mut props = HashMap::new();
+        props.insert("x".to_string(), AmfValue::Number(100.0));
+        props.insert("y".to_string(), AmfValue::Number(200.0));
+        let value = AmfValue::TypedObject {
+            class_name: "Point".to_string(),
+            properties: props,
+        };
+
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+
+        if let AmfValue::TypedObject {
+            class_name,
+            properties,
+        } = decoded
+        {
+            assert_eq!(class_name, "Point");
+            assert_eq!(properties.len(), 2);
+        } else {
+            panic!("Expected TypedObject");
+        }
+    }
+
+    #[test]
+    fn test_xml_roundtrip() {
+        let xml = "<root><child>text</child></root>".to_string();
+        let value = AmfValue::Xml(xml.clone());
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, AmfValue::Xml(xml));
+    }
+
+    #[test]
+    fn test_nested_objects() {
+        let mut inner = HashMap::new();
+        inner.insert("key".to_string(), AmfValue::String("value".into()));
+
+        let mut outer = HashMap::new();
+        outer.insert("inner".to_string(), AmfValue::Object(inner));
+        outer.insert("count".to_string(), AmfValue::Number(5.0));
+
+        let value = AmfValue::Object(outer);
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+
+        if let AmfValue::Object(dec_outer) = decoded {
+            assert_eq!(dec_outer.len(), 2);
+            if let Some(AmfValue::Object(dec_inner)) = dec_outer.get("inner") {
+                assert_eq!(dec_inner.get("key").unwrap().as_str(), Some("value"));
+            } else {
+                panic!("Expected inner object");
+            }
+        } else {
+            panic!("Expected Object");
+        }
+    }
+
+    #[test]
+    fn test_integer_encoded_as_number() {
+        // AMF0 doesn't have integer type, so integers are encoded as numbers
+        let value = AmfValue::Integer(42);
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+        // Should decode as Number, not Integer
+        assert_eq!(decoded, AmfValue::Number(42.0));
+    }
+
+    #[test]
+    fn test_byte_array_encoded_as_null() {
+        // ByteArray is AMF3-only, should be encoded as null in AMF0
+        let value = AmfValue::ByteArray(vec![1, 2, 3, 4]);
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, AmfValue::Null);
+    }
+
+    #[test]
+    fn test_empty_string() {
+        let value = AmfValue::String(String::new());
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, AmfValue::String(String::new()));
+    }
+
+    #[test]
+    fn test_empty_object() {
+        let value = AmfValue::Object(HashMap::new());
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+        if let AmfValue::Object(props) = decoded {
+            assert!(props.is_empty());
+        } else {
+            panic!("Expected empty Object");
+        }
+    }
+
+    #[test]
+    fn test_empty_array() {
+        let value = AmfValue::Array(vec![]);
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+        if let AmfValue::Array(elems) = decoded {
+            assert!(elems.is_empty());
+        } else {
+            panic!("Expected empty Array");
+        }
+    }
+
+    #[test]
+    fn test_number_special_values() {
+        // Test NaN
+        let value = AmfValue::Number(f64::NAN);
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+        if let AmfValue::Number(n) = decoded {
+            assert!(n.is_nan());
+        } else {
+            panic!("Expected Number");
+        }
+
+        // Test Infinity
+        let value = AmfValue::Number(f64::INFINITY);
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, AmfValue::Number(f64::INFINITY));
+
+        // Test Negative Infinity
+        let value = AmfValue::Number(f64::NEG_INFINITY);
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, AmfValue::Number(f64::NEG_INFINITY));
+    }
+
+    #[test]
+    fn test_decoder_reset() {
+        let mut decoder = Amf0Decoder::new();
+
+        let value1 = AmfValue::String("test".into());
+        let mut buf1 = Bytes::copy_from_slice(&encode(&value1));
+        let _ = decoder.decode(&mut buf1).unwrap();
+
+        decoder.reset();
+
+        let value2 = AmfValue::Number(42.0);
+        let mut buf2 = Bytes::copy_from_slice(&encode(&value2));
+        let decoded = decoder.decode(&mut buf2).unwrap();
+        assert_eq!(decoded, value2);
+    }
+
+    #[test]
+    fn test_encoder_len_and_empty() {
+        let mut encoder = Amf0Encoder::new();
+        assert!(encoder.is_empty());
+        assert_eq!(encoder.len(), 0);
+
+        encoder.encode(&AmfValue::Null);
+        assert!(!encoder.is_empty());
+        assert!(encoder.len() > 0);
+    }
+
+    #[test]
+    fn test_encoder_with_capacity() {
+        let encoder = Amf0Encoder::with_capacity(1024);
+        assert!(encoder.is_empty());
+    }
+
+    #[test]
+    fn test_decode_empty_buffer() {
+        let result = decode(&[]);
+        assert!(matches!(result, Err(AmfError::UnexpectedEof)));
+    }
+
+    #[test]
+    fn test_decode_truncated_number() {
+        // Number marker followed by incomplete double
+        let data = [0x00, 0x40, 0x45]; // Only 3 bytes instead of 8
+        let result = decode(&data);
+        assert!(matches!(result, Err(AmfError::UnexpectedEof)));
+    }
+
+    #[test]
+    fn test_decode_truncated_string() {
+        // String marker with length but no data
+        let data = [0x02, 0x00, 0x10]; // Length says 16, but no data
+        let result = decode(&data);
+        assert!(matches!(result, Err(AmfError::UnexpectedEof)));
+    }
+
+    #[test]
+    fn test_lenient_mode_unknown_marker() {
+        // In lenient mode (default), unknown markers return Undefined
+        let data = [0xFF]; // Unknown marker
+        let result = decode(&data).unwrap();
+        assert_eq!(result, AmfValue::Undefined);
+    }
+
+    #[test]
+    fn test_strict_mode_unknown_marker() {
+        let mut decoder = Amf0Decoder::with_lenient(false);
+        let mut buf = Bytes::from_static(&[0xFF]);
+        let result = decoder.decode(&mut buf);
+        assert!(matches!(result, Err(AmfError::UnknownMarker(0xFF))));
+    }
+
+    #[test]
+    fn test_nesting_depth_limit() {
+        // Create deeply nested objects that exceed the limit
+        let mut depth_test = AmfValue::Object(HashMap::new());
+        for _ in 0..70 {
+            let mut wrapper = HashMap::new();
+            wrapper.insert("nested".to_string(), depth_test);
+            depth_test = AmfValue::Object(wrapper);
+        }
+
+        let encoded = encode(&depth_test);
+        let result = decode(&encoded);
+        assert!(matches!(result, Err(AmfError::NestingTooDeep)));
+    }
+
+    #[test]
+    fn test_boolean_false() {
+        let value = AmfValue::Boolean(false);
+        let encoded = encode(&value);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, AmfValue::Boolean(false));
+    }
+
+    #[test]
+    fn test_complex_rtmp_command() {
+        // Simulate a typical connect command structure
+        let mut cmd_obj = HashMap::new();
+        cmd_obj.insert("app".to_string(), AmfValue::String("live".into()));
+        cmd_obj.insert("type".to_string(), AmfValue::String("nonprivate".into()));
+        cmd_obj.insert("flashVer".to_string(), AmfValue::String("FMLE/3.0".into()));
+        cmd_obj.insert(
+            "tcUrl".to_string(),
+            AmfValue::String("rtmp://localhost/live".into()),
+        );
+        cmd_obj.insert("fpad".to_string(), AmfValue::Boolean(false));
+        cmd_obj.insert("audioCodecs".to_string(), AmfValue::Number(3575.0));
+        cmd_obj.insert("videoCodecs".to_string(), AmfValue::Number(252.0));
+        cmd_obj.insert("videoFunction".to_string(), AmfValue::Number(1.0));
+        cmd_obj.insert("objectEncoding".to_string(), AmfValue::Number(0.0));
+
+        let values = vec![
+            AmfValue::String("connect".into()),
+            AmfValue::Number(1.0),
+            AmfValue::Object(cmd_obj),
+        ];
+
+        let encoded = encode_all(&values);
+        let decoded = decode_all(&encoded).unwrap();
+
+        assert_eq!(decoded.len(), 3);
+        assert_eq!(decoded[0], AmfValue::String("connect".into()));
+        assert_eq!(decoded[1], AmfValue::Number(1.0));
+
+        if let AmfValue::Object(props) = &decoded[2] {
+            assert_eq!(props.get("app").unwrap().as_str(), Some("live"));
+            assert_eq!(props.get("audioCodecs").unwrap().as_number(), Some(3575.0));
+        } else {
+            panic!("Expected Object");
+        }
+    }
 }

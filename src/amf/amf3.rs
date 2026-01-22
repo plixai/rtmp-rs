@@ -603,4 +603,336 @@ mod tests {
         let decoded = decoder.decode(&mut buf).unwrap();
         assert_eq!(decoded, AmfValue::String("hello".into()));
     }
+
+    #[test]
+    fn test_null_and_undefined() {
+        let mut encoder = Amf3Encoder::new();
+
+        encoder.encode(&AmfValue::Null);
+        encoder.encode(&AmfValue::Undefined);
+
+        let encoded = encoder.finish();
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded;
+
+        let null = decoder.decode(&mut buf).unwrap();
+        assert_eq!(null, AmfValue::Null);
+
+        let undef = decoder.decode(&mut buf).unwrap();
+        assert_eq!(undef, AmfValue::Undefined);
+    }
+
+    #[test]
+    fn test_boolean_values() {
+        let mut encoder = Amf3Encoder::new();
+
+        encoder.encode(&AmfValue::Boolean(true));
+        encoder.encode(&AmfValue::Boolean(false));
+
+        let encoded = encoder.finish();
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded;
+
+        let true_val = decoder.decode(&mut buf).unwrap();
+        assert_eq!(true_val, AmfValue::Boolean(true));
+
+        let false_val = decoder.decode(&mut buf).unwrap();
+        assert_eq!(false_val, AmfValue::Boolean(false));
+    }
+
+    #[test]
+    fn test_integer_values() {
+        let mut encoder = Amf3Encoder::new();
+
+        // Test small positive integer
+        encoder.encode(&AmfValue::Integer(42));
+        // Test small negative integer
+        encoder.encode(&AmfValue::Integer(-42));
+        // Test zero
+        encoder.encode(&AmfValue::Integer(0));
+        // Test max 29-bit positive
+        encoder.encode(&AmfValue::Integer(0x0FFFFFFF));
+        // Test min 29-bit negative
+        encoder.encode(&AmfValue::Integer(-0x10000000));
+
+        let encoded = encoder.finish();
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded;
+
+        assert_eq!(decoder.decode(&mut buf).unwrap(), AmfValue::Integer(42));
+        assert_eq!(decoder.decode(&mut buf).unwrap(), AmfValue::Integer(-42));
+        assert_eq!(decoder.decode(&mut buf).unwrap(), AmfValue::Integer(0));
+        assert_eq!(
+            decoder.decode(&mut buf).unwrap(),
+            AmfValue::Integer(0x0FFFFFFF)
+        );
+        assert_eq!(
+            decoder.decode(&mut buf).unwrap(),
+            AmfValue::Integer(-0x10000000)
+        );
+    }
+
+    #[test]
+    fn test_integer_overflow_as_double() {
+        let mut encoder = Amf3Encoder::new();
+
+        // Integer outside 29-bit range should be encoded as double
+        encoder.encode(&AmfValue::Integer(i32::MAX));
+
+        let encoded = encoder.finish();
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded;
+
+        // Should decode as Number since it was encoded as double
+        let result = decoder.decode(&mut buf).unwrap();
+        if let AmfValue::Number(n) = result {
+            assert_eq!(n as i32, i32::MAX);
+        } else {
+            panic!("Expected Number for overflow integer");
+        }
+    }
+
+    #[test]
+    fn test_double_values() {
+        let mut encoder = Amf3Encoder::new();
+
+        encoder.encode(&AmfValue::Number(3.14159));
+        encoder.encode(&AmfValue::Number(-273.15));
+        encoder.encode(&AmfValue::Number(0.0));
+
+        let encoded = encoder.finish();
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded;
+
+        assert_eq!(decoder.decode(&mut buf).unwrap(), AmfValue::Number(3.14159));
+        assert_eq!(decoder.decode(&mut buf).unwrap(), AmfValue::Number(-273.15));
+        assert_eq!(decoder.decode(&mut buf).unwrap(), AmfValue::Number(0.0));
+    }
+
+    #[test]
+    fn test_empty_string() {
+        let mut encoder = Amf3Encoder::new();
+        encoder.encode(&AmfValue::String(String::new()));
+
+        let encoded = encoder.finish();
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded;
+
+        let result = decoder.decode(&mut buf).unwrap();
+        assert_eq!(result, AmfValue::String(String::new()));
+    }
+
+    #[test]
+    fn test_array_roundtrip() {
+        let mut encoder = Amf3Encoder::new();
+
+        let array = AmfValue::Array(vec![
+            AmfValue::Number(1.0),
+            AmfValue::String("two".into()),
+            AmfValue::Boolean(true),
+        ]);
+
+        encoder.encode(&array);
+
+        let encoded = encoder.finish();
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded;
+
+        let result = decoder.decode(&mut buf).unwrap();
+        if let AmfValue::Array(elements) = result {
+            assert_eq!(elements.len(), 3);
+            assert_eq!(elements[0], AmfValue::Number(1.0));
+            assert_eq!(elements[1], AmfValue::String("two".into()));
+            assert_eq!(elements[2], AmfValue::Boolean(true));
+        } else {
+            panic!("Expected Array");
+        }
+    }
+
+    #[test]
+    fn test_object_roundtrip() {
+        let mut encoder = Amf3Encoder::new();
+
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), AmfValue::String("test".into()));
+        props.insert("value".to_string(), AmfValue::Number(123.0));
+
+        encoder.encode(&AmfValue::Object(props));
+
+        let encoded = encoder.finish();
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded;
+
+        let result = decoder.decode(&mut buf).unwrap();
+        if let AmfValue::Object(dec_props) = result {
+            assert_eq!(dec_props.get("name").unwrap().as_str(), Some("test"));
+            assert_eq!(dec_props.get("value").unwrap().as_number(), Some(123.0));
+        } else {
+            panic!("Expected Object");
+        }
+    }
+
+    #[test]
+    fn test_date_roundtrip() {
+        let mut encoder = Amf3Encoder::new();
+
+        let timestamp = 1700000000000.0;
+        encoder.encode(&AmfValue::Date(timestamp));
+
+        let encoded = encoder.finish();
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded;
+
+        let result = decoder.decode(&mut buf).unwrap();
+        assert_eq!(result, AmfValue::Date(timestamp));
+    }
+
+    #[test]
+    fn test_byte_array_roundtrip() {
+        let mut encoder = Amf3Encoder::new();
+
+        let data = vec![0x01, 0x02, 0x03, 0x04, 0x05];
+        encoder.encode(&AmfValue::ByteArray(data.clone()));
+
+        let encoded = encoder.finish();
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded;
+
+        let result = decoder.decode(&mut buf).unwrap();
+        assert_eq!(result, AmfValue::ByteArray(data));
+    }
+
+    #[test]
+    fn test_xml_roundtrip() {
+        let mut encoder = Amf3Encoder::new();
+
+        let xml = "<root><child>text</child></root>".to_string();
+        encoder.encode(&AmfValue::Xml(xml.clone()));
+
+        let encoded = encoder.finish();
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded;
+
+        let result = decoder.decode(&mut buf).unwrap();
+        assert_eq!(result, AmfValue::Xml(xml));
+    }
+
+    #[test]
+    fn test_decoder_reset() {
+        let mut encoder = Amf3Encoder::new();
+        encoder.encode(&AmfValue::String("test".into()));
+        let encoded = encoder.finish();
+
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded.clone();
+        let _ = decoder.decode(&mut buf).unwrap();
+
+        // Reset and decode again
+        decoder.reset();
+        let mut buf2 = encoded;
+        let result = decoder.decode(&mut buf2).unwrap();
+        assert_eq!(result, AmfValue::String("test".into()));
+    }
+
+    #[test]
+    fn test_string_references() {
+        let mut encoder = Amf3Encoder::new();
+
+        // Encode the same string multiple times - should use references after first
+        encoder.encode(&AmfValue::String("repeated".into()));
+        encoder.encode(&AmfValue::String("repeated".into()));
+        encoder.encode(&AmfValue::String("repeated".into()));
+
+        let encoded = encoder.finish();
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded;
+
+        // All three should decode correctly
+        assert_eq!(
+            decoder.decode(&mut buf).unwrap(),
+            AmfValue::String("repeated".into())
+        );
+        assert_eq!(
+            decoder.decode(&mut buf).unwrap(),
+            AmfValue::String("repeated".into())
+        );
+        assert_eq!(
+            decoder.decode(&mut buf).unwrap(),
+            AmfValue::String("repeated".into())
+        );
+    }
+
+    #[test]
+    fn test_u29_boundary_values() {
+        // Test the specific boundary values for U29 encoding
+        let mut encoder = Amf3Encoder::new();
+
+        // 1-byte encoding: 0-127
+        encoder.write_u29(0);
+        encoder.write_u29(127);
+
+        // 2-byte encoding: 128-16383
+        encoder.write_u29(128);
+        encoder.write_u29(16383);
+
+        // 3-byte encoding: 16384-2097151
+        encoder.write_u29(16384);
+        encoder.write_u29(2097151);
+
+        // 4-byte encoding: 2097152 and above
+        encoder.write_u29(2097152);
+        encoder.write_u29(0x1FFFFFFF); // Max U29
+
+        let encoded = encoder.finish();
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded;
+
+        assert_eq!(decoder.read_u29(&mut buf).unwrap(), 0);
+        assert_eq!(decoder.read_u29(&mut buf).unwrap(), 127);
+        assert_eq!(decoder.read_u29(&mut buf).unwrap(), 128);
+        assert_eq!(decoder.read_u29(&mut buf).unwrap(), 16383);
+        assert_eq!(decoder.read_u29(&mut buf).unwrap(), 16384);
+        assert_eq!(decoder.read_u29(&mut buf).unwrap(), 2097151);
+        assert_eq!(decoder.read_u29(&mut buf).unwrap(), 2097152);
+        assert_eq!(decoder.read_u29(&mut buf).unwrap(), 0x1FFFFFFF);
+    }
+
+    #[test]
+    fn test_decode_empty_buffer() {
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = Bytes::new();
+        let result = decoder.decode(&mut buf);
+        assert!(matches!(result, Err(AmfError::UnexpectedEof)));
+    }
+
+    #[test]
+    fn test_lenient_mode_unknown_marker() {
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = Bytes::from_static(&[0xFF]); // Unknown marker
+        let result = decoder.decode(&mut buf).unwrap();
+        assert_eq!(result, AmfValue::Undefined);
+    }
+
+    #[test]
+    fn test_ecma_array_as_object() {
+        let mut encoder = Amf3Encoder::new();
+
+        let mut props = HashMap::new();
+        props.insert("key1".to_string(), AmfValue::Number(1.0));
+        props.insert("key2".to_string(), AmfValue::String("value".into()));
+
+        encoder.encode(&AmfValue::EcmaArray(props));
+
+        let encoded = encoder.finish();
+        let mut decoder = Amf3Decoder::new();
+        let mut buf = encoded;
+
+        // EcmaArray is encoded as Object in AMF3
+        let result = decoder.decode(&mut buf).unwrap();
+        if let AmfValue::Object(dec_props) = result {
+            assert!(dec_props.contains_key("key1") || dec_props.contains_key("key2"));
+        } else {
+            panic!("Expected Object (from EcmaArray)");
+        }
+    }
 }

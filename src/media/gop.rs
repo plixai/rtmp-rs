@@ -293,4 +293,200 @@ mod tests {
 
         assert_eq!(buffer.gop_duration(), Some(66));
     }
+
+    #[test]
+    fn test_gop_buffer_default() {
+        let buffer = GopBuffer::default();
+        assert!(!buffer.is_ready());
+        assert_eq!(buffer.frame_count(), 0);
+        assert_eq!(buffer.size(), 0);
+    }
+
+    #[test]
+    fn test_gop_buffer_headers() {
+        let mut buffer = GopBuffer::new();
+
+        // Set headers
+        let video_header = FlvTag::video(0, Bytes::from_static(&[0x17, 0x00]));
+        let audio_header = FlvTag::audio(0, Bytes::from_static(&[0xAF, 0x00]));
+
+        buffer.set_video_header(video_header.clone());
+        buffer.set_audio_header(audio_header.clone());
+
+        assert!(buffer.video_header().is_some());
+        assert!(buffer.audio_header().is_some());
+    }
+
+    #[test]
+    fn test_gop_buffer_metadata() {
+        let mut buffer = GopBuffer::new();
+
+        let metadata = Bytes::from_static(b"test metadata");
+        buffer.set_metadata(metadata.clone());
+
+        assert!(buffer.metadata().is_some());
+        assert_eq!(buffer.metadata().unwrap(), &metadata);
+    }
+
+    #[test]
+    fn test_gop_buffer_clear() {
+        let mut buffer = GopBuffer::new();
+
+        buffer.set_video_header(make_tag(0, true, 50));
+        buffer.set_audio_header(FlvTag::audio(0, Bytes::from_static(&[0xAF, 0x00])));
+        buffer.set_metadata(Bytes::from_static(b"meta"));
+        buffer.push(make_tag(0, true, 100));
+        buffer.push(make_tag(33, false, 100));
+
+        buffer.clear();
+
+        assert!(buffer.video_header().is_none());
+        assert!(buffer.audio_header().is_none());
+        assert!(buffer.metadata().is_none());
+        assert_eq!(buffer.frame_count(), 0);
+        assert!(!buffer.has_complete_gop());
+    }
+
+    #[test]
+    fn test_gop_buffer_clear_frames_only() {
+        let mut buffer = GopBuffer::new();
+
+        buffer.set_video_header(make_tag(0, true, 50));
+        buffer.push(make_tag(0, true, 100));
+        buffer.push(make_tag(33, false, 100));
+
+        buffer.clear_frames();
+
+        // Headers should still be there
+        assert!(buffer.video_header().is_some());
+        // Frames should be gone
+        assert_eq!(buffer.frame_count(), 0);
+        assert!(!buffer.has_complete_gop());
+    }
+
+    #[test]
+    fn test_gop_buffer_utilization() {
+        let mut buffer = GopBuffer::with_max_size(1000);
+
+        assert_eq!(buffer.utilization(), 0.0);
+
+        buffer.push(make_tag(0, true, 500));
+        assert!((buffer.utilization() - 50.0).abs() < 1.0); // ~50%
+    }
+
+    #[test]
+    fn test_gop_buffer_timestamp_range() {
+        let mut buffer = GopBuffer::new();
+
+        // Empty buffer
+        assert!(buffer.timestamp_range().is_none());
+
+        // Single frame
+        buffer.push(make_tag(100, true, 50));
+        assert_eq!(buffer.timestamp_range(), Some((100, 100)));
+
+        // Multiple frames
+        buffer.push(make_tag(133, false, 50));
+        buffer.push(make_tag(166, false, 50));
+        assert_eq!(buffer.timestamp_range(), Some((100, 166)));
+    }
+
+    #[test]
+    fn test_gop_buffer_get_catchup_data() {
+        let mut buffer = GopBuffer::new();
+
+        buffer.set_video_header(FlvTag::video(0, Bytes::from_static(&[0x17, 0x00])));
+        buffer.set_audio_header(FlvTag::audio(0, Bytes::from_static(&[0xAF, 0x00])));
+        buffer.push(make_tag(0, true, 100));
+        buffer.push(make_tag(33, false, 50));
+        buffer.push(make_tag(66, false, 50));
+
+        let catchup = buffer.get_catchup_data();
+
+        // Should have: video header + audio header + 3 frames = 5 items
+        assert_eq!(catchup.len(), 5);
+
+        // First should be video header
+        assert!(catchup[0].is_avc_sequence_header());
+        // Second should be audio header
+        assert!(catchup[1].is_aac_sequence_header());
+        // Rest are frames
+        assert!(catchup[2].is_keyframe());
+    }
+
+    #[test]
+    fn test_gop_buffer_get_catchup_data_without_headers() {
+        let mut buffer = GopBuffer::new();
+
+        buffer.push(make_tag(0, true, 100));
+        buffer.push(make_tag(33, false, 50));
+
+        let catchup = buffer.get_catchup_data();
+
+        // Just the frames, no headers
+        assert_eq!(catchup.len(), 2);
+    }
+
+    #[test]
+    fn test_gop_buffer_drops_old_frames_to_fit() {
+        let mut buffer = GopBuffer::with_max_size(500);
+
+        // Add frames that total more than max
+        buffer.push(make_tag(0, true, 200));
+        buffer.push(make_tag(33, false, 200));
+        // Total: 400, still fits
+
+        // This will push us over, causing oldest frame(s) to be dropped
+        buffer.push(make_tag(66, false, 200));
+
+        // Should have dropped oldest to make room
+        assert!(buffer.size() <= 500);
+    }
+
+    #[test]
+    fn test_gop_buffer_no_complete_gop_without_keyframe() {
+        let mut buffer = GopBuffer::new();
+
+        // Add non-keyframes only
+        buffer.push(make_tag(0, false, 100));
+        buffer.push(make_tag(33, false, 100));
+
+        assert!(!buffer.has_complete_gop());
+
+        // Now add keyframe
+        buffer.push(make_tag(66, true, 100));
+        assert!(buffer.has_complete_gop());
+    }
+
+    #[test]
+    fn test_gop_buffer_is_ready_requirements() {
+        let mut buffer = GopBuffer::new();
+
+        // Not ready: no header, no GOP
+        assert!(!buffer.is_ready());
+
+        // Add video header but no GOP
+        buffer.set_video_header(FlvTag::video(0, Bytes::from_static(&[0x17, 0x00])));
+        assert!(!buffer.is_ready());
+
+        // Add non-keyframe - still not ready
+        buffer.push(make_tag(0, false, 100));
+        assert!(!buffer.is_ready());
+
+        // Add keyframe - now ready
+        buffer.push(make_tag(33, true, 100));
+        assert!(buffer.is_ready());
+    }
+
+    #[test]
+    fn test_gop_buffer_audio_only_stream() {
+        let mut buffer = GopBuffer::new();
+
+        // Audio-only stream might set audio header
+        buffer.set_audio_header(FlvTag::audio(0, Bytes::from_static(&[0xAF, 0x00])));
+
+        // is_ready requires video_header, so audio-only won't be "ready"
+        // This is intentional - late joiners need video keyframe typically
+        assert!(!buffer.is_ready());
+    }
 }

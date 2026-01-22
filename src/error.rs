@@ -193,6 +193,7 @@ impl std::error::Error for MediaError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error as StdError;
     use std::io;
 
     #[test]
@@ -245,14 +246,14 @@ mod tests {
         // Only Io error should have a source
         let io_err = io::Error::new(io::ErrorKind::NotFound, "file not found");
         let err = Error::Io(io_err);
-        assert!(err.source().is_some());
+        assert!(StdError::source(&err).is_some());
 
         // Other errors should not have a source
         let err = Error::Protocol(ProtocolError::InvalidChunkHeader);
-        assert!(err.source().is_none());
+        assert!(StdError::source(&err).is_none());
 
         let err = Error::Timeout;
-        assert!(err.source().is_none());
+        assert!(StdError::source(&err).is_none());
     }
 
     #[test]

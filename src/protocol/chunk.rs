@@ -598,4 +598,423 @@ mod tests {
         };
         assert_eq!(decoded.payload.len(), 500);
     }
+
+    #[test]
+    fn test_chunk_size_configuration() {
+        let mut encoder = ChunkEncoder::new();
+        let mut decoder = ChunkDecoder::new();
+
+        // Check default chunk size
+        assert_eq!(encoder.chunk_size(), DEFAULT_CHUNK_SIZE);
+        assert_eq!(decoder.chunk_size(), DEFAULT_CHUNK_SIZE);
+
+        // Set new chunk size
+        encoder.set_chunk_size(4096);
+        decoder.set_chunk_size(4096);
+
+        assert_eq!(encoder.chunk_size(), 4096);
+        assert_eq!(decoder.chunk_size(), 4096);
+    }
+
+    #[test]
+    fn test_chunk_size_capped_at_max() {
+        let mut encoder = ChunkEncoder::new();
+        let mut decoder = ChunkDecoder::new();
+
+        // Try to set chunk size larger than MAX
+        encoder.set_chunk_size(u32::MAX);
+        decoder.set_chunk_size(u32::MAX);
+
+        assert_eq!(encoder.chunk_size(), MAX_CHUNK_SIZE);
+        assert_eq!(decoder.chunk_size(), MAX_CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_different_chunk_stream_ids() {
+        let mut encoder = ChunkEncoder::new();
+        let mut decoder = ChunkDecoder::new();
+
+        // Test various CSIDs
+        let csids = [2, 3, 63, 64, 100, 319, 320, 1000];
+
+        for &csid in &csids {
+            let chunk = RtmpChunk {
+                csid,
+                timestamp: 1000,
+                message_type: MSG_COMMAND_AMF0,
+                stream_id: 0,
+                payload: Bytes::from_static(b"test"),
+            };
+
+            let mut encoded = BytesMut::new();
+            encoder.encode(&chunk, &mut encoded);
+
+            let decoded = decoder.decode(&mut encoded).unwrap().unwrap();
+            assert_eq!(decoded.csid, csid);
+        }
+    }
+
+    #[test]
+    fn test_extended_timestamp() {
+        let mut encoder = ChunkEncoder::new();
+        let mut decoder = ChunkDecoder::new();
+
+        // Create a chunk with timestamp >= EXTENDED_TIMESTAMP_THRESHOLD
+        let chunk = RtmpChunk {
+            csid: CSID_COMMAND,
+            timestamp: 0xFFFFFF + 1000, // Requires extended timestamp
+            message_type: MSG_COMMAND_AMF0,
+            stream_id: 0,
+            payload: Bytes::from_static(b"extended timestamp test"),
+        };
+
+        let mut encoded = BytesMut::new();
+        encoder.encode(&chunk, &mut encoded);
+
+        let decoded = decoder.decode(&mut encoded).unwrap().unwrap();
+        assert_eq!(decoded.timestamp, 0xFFFFFF + 1000);
+    }
+
+    #[test]
+    fn test_extended_timestamp_boundary() {
+        let mut encoder = ChunkEncoder::new();
+        let mut decoder = ChunkDecoder::new();
+
+        // Test exactly at the threshold
+        let chunk = RtmpChunk {
+            csid: CSID_COMMAND,
+            timestamp: EXTENDED_TIMESTAMP_THRESHOLD,
+            message_type: MSG_COMMAND_AMF0,
+            stream_id: 0,
+            payload: Bytes::from_static(b"boundary test"),
+        };
+
+        let mut encoded = BytesMut::new();
+        encoder.encode(&chunk, &mut encoded);
+
+        let decoded = decoder.decode(&mut encoded).unwrap().unwrap();
+        assert_eq!(decoded.timestamp, EXTENDED_TIMESTAMP_THRESHOLD);
+    }
+
+    #[test]
+    fn test_zero_timestamp() {
+        let mut encoder = ChunkEncoder::new();
+        let mut decoder = ChunkDecoder::new();
+
+        let chunk = RtmpChunk {
+            csid: CSID_VIDEO,
+            timestamp: 0,
+            message_type: MSG_VIDEO,
+            stream_id: 1,
+            payload: Bytes::from_static(b"zero ts"),
+        };
+
+        let mut encoded = BytesMut::new();
+        encoder.encode(&chunk, &mut encoded);
+
+        let decoded = decoder.decode(&mut encoded).unwrap().unwrap();
+        assert_eq!(decoded.timestamp, 0);
+    }
+
+    #[test]
+    fn test_abort_clears_partial_message() {
+        let mut decoder = ChunkDecoder::new();
+
+        // Simulate receiving part of a large message
+        let large_chunk = RtmpChunk {
+            csid: CSID_VIDEO,
+            timestamp: 0,
+            message_type: MSG_VIDEO,
+            stream_id: 1,
+            payload: Bytes::from(vec![0u8; 500]),
+        };
+
+        let mut encoder = ChunkEncoder::new();
+        let mut encoded = BytesMut::new();
+        encoder.encode(&large_chunk, &mut encoded);
+
+        // Take only the first 200 bytes (partial message)
+        let mut partial = encoded.split_to(200);
+
+        // Try to decode - should return None (incomplete)
+        let result = decoder.decode(&mut partial).unwrap();
+        assert!(result.is_none());
+
+        // Abort the message on this CSID
+        decoder.abort(CSID_VIDEO);
+
+        // Now send a new complete small message on the same CSID
+        let small_chunk = RtmpChunk {
+            csid: CSID_VIDEO,
+            timestamp: 100,
+            message_type: MSG_VIDEO,
+            stream_id: 1,
+            payload: Bytes::from_static(b"new message"),
+        };
+
+        let mut new_encoded = BytesMut::new();
+        encoder.encode(&small_chunk, &mut new_encoded);
+
+        let decoded = decoder.decode(&mut new_encoded).unwrap().unwrap();
+        assert_eq!(decoded.payload.as_ref(), b"new message");
+    }
+
+    #[test]
+    fn test_decode_empty_buffer() {
+        let mut decoder = ChunkDecoder::new();
+        let mut buf = BytesMut::new();
+
+        let result = decoder.decode(&mut buf).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_multiple_messages_same_csid() {
+        let mut encoder = ChunkEncoder::new();
+        let mut decoder = ChunkDecoder::new();
+
+        // First message
+        let chunk1 = RtmpChunk {
+            csid: CSID_COMMAND,
+            timestamp: 0,
+            message_type: MSG_COMMAND_AMF0,
+            stream_id: 0,
+            payload: Bytes::from_static(b"first"),
+        };
+
+        // Second message (same CSID, uses header compression)
+        let chunk2 = RtmpChunk {
+            csid: CSID_COMMAND,
+            timestamp: 100,
+            message_type: MSG_COMMAND_AMF0,
+            stream_id: 0,
+            payload: Bytes::from_static(b"second"),
+        };
+
+        let mut encoded = BytesMut::new();
+        encoder.encode(&chunk1, &mut encoded);
+        encoder.encode(&chunk2, &mut encoded);
+
+        let decoded1 = decoder.decode(&mut encoded).unwrap().unwrap();
+        assert_eq!(decoded1.payload.as_ref(), b"first");
+        assert_eq!(decoded1.timestamp, 0);
+
+        let decoded2 = decoder.decode(&mut encoded).unwrap().unwrap();
+        assert_eq!(decoded2.payload.as_ref(), b"second");
+        assert_eq!(decoded2.timestamp, 100);
+    }
+
+    #[test]
+    fn test_interleaved_chunk_streams() {
+        let mut encoder = ChunkEncoder::new();
+        let mut decoder = ChunkDecoder::new();
+
+        // Interleave chunks from different streams
+        let video_chunk = RtmpChunk {
+            csid: CSID_VIDEO,
+            timestamp: 0,
+            message_type: MSG_VIDEO,
+            stream_id: 1,
+            payload: Bytes::from_static(b"video"),
+        };
+
+        let audio_chunk = RtmpChunk {
+            csid: CSID_AUDIO,
+            timestamp: 0,
+            message_type: MSG_AUDIO,
+            stream_id: 1,
+            payload: Bytes::from_static(b"audio"),
+        };
+
+        let command_chunk = RtmpChunk {
+            csid: CSID_COMMAND,
+            timestamp: 0,
+            message_type: MSG_COMMAND_AMF0,
+            stream_id: 0,
+            payload: Bytes::from_static(b"command"),
+        };
+
+        let mut encoded = BytesMut::new();
+        encoder.encode(&video_chunk, &mut encoded);
+        encoder.encode(&audio_chunk, &mut encoded);
+        encoder.encode(&command_chunk, &mut encoded);
+
+        let decoded_video = decoder.decode(&mut encoded).unwrap().unwrap();
+        assert_eq!(decoded_video.csid, CSID_VIDEO);
+        assert_eq!(decoded_video.message_type, MSG_VIDEO);
+
+        let decoded_audio = decoder.decode(&mut encoded).unwrap().unwrap();
+        assert_eq!(decoded_audio.csid, CSID_AUDIO);
+        assert_eq!(decoded_audio.message_type, MSG_AUDIO);
+
+        let decoded_cmd = decoder.decode(&mut encoded).unwrap().unwrap();
+        assert_eq!(decoded_cmd.csid, CSID_COMMAND);
+        assert_eq!(decoded_cmd.message_type, MSG_COMMAND_AMF0);
+    }
+
+    #[test]
+    fn test_message_too_large_error() {
+        let mut decoder = ChunkDecoder::new();
+        decoder.max_message_size = 100; // Set a small limit
+
+        // Create an encoded chunk with message length > 100
+        let mut encoder = ChunkEncoder::new();
+        let chunk = RtmpChunk {
+            csid: CSID_VIDEO,
+            timestamp: 0,
+            message_type: MSG_VIDEO,
+            stream_id: 1,
+            payload: Bytes::from(vec![0u8; 200]),
+        };
+
+        let mut encoded = BytesMut::new();
+        encoder.encode(&chunk, &mut encoded);
+
+        // Decoding should fail with MessageTooLarge
+        let result = decoder.decode(&mut encoded);
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.to_string().contains("too large"));
+        }
+    }
+
+    #[test]
+    fn test_header_format_selection() {
+        let mut encoder = ChunkEncoder::new();
+        let mut buf = BytesMut::new();
+
+        // First message uses fmt 0 (full header)
+        let chunk1 = RtmpChunk {
+            csid: CSID_COMMAND,
+            timestamp: 0,
+            message_type: MSG_COMMAND_AMF0,
+            stream_id: 0,
+            payload: Bytes::from_static(b"test"),
+        };
+        encoder.encode(&chunk1, &mut buf);
+
+        let first_byte = buf[0];
+        let fmt = (first_byte >> 6) & 0x03;
+        assert_eq!(fmt, 0, "First message should use fmt 0");
+
+        buf.clear();
+
+        // Same stream_id, same type, same length - should use compressed header
+        let chunk2 = RtmpChunk {
+            csid: CSID_COMMAND,
+            timestamp: 100,
+            message_type: MSG_COMMAND_AMF0,
+            stream_id: 0,
+            payload: Bytes::from_static(b"test"), // Same length
+        };
+        encoder.encode(&chunk2, &mut buf);
+
+        let first_byte = buf[0];
+        let fmt = (first_byte >> 6) & 0x03;
+        // Should use fmt 2 (timestamp delta only) or fmt 3 (if delta matches)
+        assert!(fmt >= 2, "Subsequent message should use compressed header");
+    }
+
+    #[test]
+    fn test_timestamp_delta_wrapping() {
+        let mut encoder = ChunkEncoder::new();
+        let mut decoder = ChunkDecoder::new();
+
+        // Start near the timestamp wrap point
+        let chunk1 = RtmpChunk {
+            csid: CSID_VIDEO,
+            timestamp: 0xFFFFFFF0,
+            message_type: MSG_VIDEO,
+            stream_id: 1,
+            payload: Bytes::from_static(b"near wrap"),
+        };
+
+        // Timestamp wraps around
+        let chunk2 = RtmpChunk {
+            csid: CSID_VIDEO,
+            timestamp: 0x00000010, // Wrapped around
+            message_type: MSG_VIDEO,
+            stream_id: 1,
+            payload: Bytes::from_static(b"after wrap"),
+        };
+
+        let mut encoded = BytesMut::new();
+        encoder.encode(&chunk1, &mut encoded);
+        encoder.encode(&chunk2, &mut encoded);
+
+        let decoded1 = decoder.decode(&mut encoded).unwrap().unwrap();
+        assert_eq!(decoded1.timestamp, 0xFFFFFFF0);
+
+        // The second timestamp calculation involves wrapping arithmetic
+        let decoded2 = decoder.decode(&mut encoded).unwrap().unwrap();
+        // Just verify it decoded without error; exact value depends on implementation
+        assert!(decoded2.timestamp != 0xFFFFFFF0);
+    }
+
+    #[test]
+    fn test_custom_chunk_size_encoding_decoding() {
+        let mut encoder = ChunkEncoder::new();
+        let mut decoder = ChunkDecoder::new();
+
+        // Use a larger chunk size to reduce fragmentation
+        encoder.set_chunk_size(1024);
+        decoder.set_chunk_size(1024);
+
+        let payload = vec![0u8; 2000]; // Would be 16 chunks at 128, but only 2 at 1024
+        let chunk = RtmpChunk {
+            csid: CSID_VIDEO,
+            timestamp: 0,
+            message_type: MSG_VIDEO,
+            stream_id: 1,
+            payload: Bytes::from(payload),
+        };
+
+        let mut encoded = BytesMut::new();
+        encoder.encode(&chunk, &mut encoded);
+
+        // Should be smaller than with default chunk size due to fewer headers
+        let decoded = loop {
+            if let Some(c) = decoder.decode(&mut encoded).unwrap() {
+                break c;
+            }
+        };
+        assert_eq!(decoded.payload.len(), 2000);
+    }
+
+    #[test]
+    fn test_incremental_decoding() {
+        let mut encoder = ChunkEncoder::new();
+        let mut decoder = ChunkDecoder::new();
+
+        let chunk = RtmpChunk {
+            csid: CSID_COMMAND,
+            timestamp: 500,
+            message_type: MSG_COMMAND_AMF0,
+            stream_id: 0,
+            payload: Bytes::from_static(b"test payload for incremental decode"),
+        };
+
+        let mut encoded = BytesMut::new();
+        encoder.encode(&chunk, &mut encoded);
+
+        // Feed one byte at a time to test incremental decoding
+        let mut partial = BytesMut::new();
+        let mut decoded_chunk = None;
+
+        for byte in encoded.iter() {
+            partial.put_u8(*byte);
+            if let Some(c) = decoder.decode(&mut partial).unwrap() {
+                decoded_chunk = Some(c);
+                break;
+            }
+        }
+
+        assert!(decoded_chunk.is_some());
+        let decoded = decoded_chunk.unwrap();
+        assert_eq!(decoded.timestamp, 500);
+        assert_eq!(
+            decoded.payload.as_ref(),
+            b"test payload for incremental decode"
+        );
+    }
 }

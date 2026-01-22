@@ -220,4 +220,170 @@ mod tests {
         let v: AmfValue = true.into();
         assert!(matches!(v, AmfValue::Boolean(true)));
     }
+
+    #[test]
+    fn test_as_bool() {
+        assert_eq!(AmfValue::Boolean(true).as_bool(), Some(true));
+        assert_eq!(AmfValue::Boolean(false).as_bool(), Some(false));
+        assert_eq!(AmfValue::Number(1.0).as_bool(), None);
+        assert_eq!(AmfValue::Null.as_bool(), None);
+    }
+
+    #[test]
+    fn test_as_array() {
+        let arr = AmfValue::Array(vec![AmfValue::Number(1.0), AmfValue::Number(2.0)]);
+        assert!(arr.as_array().is_some());
+        assert_eq!(arr.as_array().unwrap().len(), 2);
+
+        assert!(AmfValue::Null.as_array().is_none());
+        assert!(AmfValue::Object(HashMap::new()).as_array().is_none());
+    }
+
+    #[test]
+    fn test_as_object_mut() {
+        let mut obj = AmfValue::Object(HashMap::new());
+        if let Some(map) = obj.as_object_mut() {
+            map.insert("key".to_string(), AmfValue::String("value".into()));
+        }
+
+        assert_eq!(obj.get_string("key"), Some("value"));
+    }
+
+    #[test]
+    fn test_is_null_or_undefined() {
+        assert!(AmfValue::Null.is_null_or_undefined());
+        assert!(AmfValue::Undefined.is_null_or_undefined());
+        assert!(!AmfValue::Boolean(false).is_null_or_undefined());
+        assert!(!AmfValue::Number(0.0).is_null_or_undefined());
+        assert!(!AmfValue::String(String::new()).is_null_or_undefined());
+    }
+
+    #[test]
+    fn test_get_number() {
+        let mut obj = HashMap::new();
+        obj.insert("count".to_string(), AmfValue::Number(42.0));
+        obj.insert("name".to_string(), AmfValue::String("test".into()));
+        let amf = AmfValue::Object(obj);
+
+        assert_eq!(amf.get_number("count"), Some(42.0));
+        assert_eq!(amf.get_number("name"), None);
+        assert_eq!(amf.get_number("missing"), None);
+    }
+
+    #[test]
+    fn test_integer_as_number() {
+        let integer = AmfValue::Integer(100);
+        assert_eq!(integer.as_number(), Some(100.0));
+    }
+
+    #[test]
+    fn test_default_value() {
+        let default = AmfValue::default();
+        assert_eq!(default, AmfValue::Null);
+    }
+
+    #[test]
+    fn test_from_i32() {
+        let v: AmfValue = 42i32.into();
+        assert_eq!(v, AmfValue::Number(42.0));
+    }
+
+    #[test]
+    fn test_from_u32() {
+        let v: AmfValue = 1000u32.into();
+        assert_eq!(v, AmfValue::Number(1000.0));
+    }
+
+    #[test]
+    fn test_from_string_owned() {
+        let s = String::from("owned");
+        let v: AmfValue = s.into();
+        assert_eq!(v.as_str(), Some("owned"));
+    }
+
+    #[test]
+    fn test_from_vec() {
+        let vec: Vec<f64> = vec![1.0, 2.0, 3.0];
+        let v: AmfValue = vec.into();
+        if let AmfValue::Array(arr) = v {
+            assert_eq!(arr.len(), 3);
+        } else {
+            panic!("Expected Array");
+        }
+    }
+
+    #[test]
+    fn test_from_hashmap() {
+        let mut map = HashMap::new();
+        map.insert("a".to_string(), 1.0f64);
+        map.insert("b".to_string(), 2.0f64);
+
+        let v: AmfValue = map.into();
+        if let AmfValue::Object(obj) = v {
+            assert_eq!(obj.len(), 2);
+        } else {
+            panic!("Expected Object");
+        }
+    }
+
+    #[test]
+    fn test_as_object_with_typed_object() {
+        let mut props = HashMap::new();
+        props.insert("x".to_string(), AmfValue::Number(10.0));
+
+        let typed = AmfValue::TypedObject {
+            class_name: "Point".to_string(),
+            properties: props,
+        };
+
+        // as_object should work on TypedObject
+        assert!(typed.as_object().is_some());
+        assert_eq!(typed.get_number("x"), Some(10.0));
+    }
+
+    #[test]
+    fn test_as_object_with_ecma_array() {
+        let mut props = HashMap::new();
+        props.insert("key".to_string(), AmfValue::String("value".into()));
+
+        let ecma = AmfValue::EcmaArray(props);
+
+        // as_object should work on EcmaArray
+        assert!(ecma.as_object().is_some());
+        assert_eq!(ecma.get_string("key"), Some("value"));
+    }
+
+    #[test]
+    fn test_get_on_non_object() {
+        assert!(AmfValue::Null.get("key").is_none());
+        assert!(AmfValue::Number(42.0).get("key").is_none());
+        assert!(AmfValue::Array(vec![]).get("0").is_none());
+    }
+
+    #[test]
+    fn test_amf_value_clone() {
+        let original = AmfValue::Object({
+            let mut m = HashMap::new();
+            m.insert(
+                "nested".to_string(),
+                AmfValue::Array(vec![AmfValue::Number(1.0), AmfValue::String("test".into())]),
+            );
+            m
+        });
+
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_amf_value_partial_eq() {
+        assert_eq!(AmfValue::Null, AmfValue::Null);
+        assert_ne!(AmfValue::Null, AmfValue::Undefined);
+        assert_eq!(AmfValue::Number(1.0), AmfValue::Number(1.0));
+        assert_ne!(AmfValue::Number(1.0), AmfValue::Number(2.0));
+        assert_eq!(
+            AmfValue::String("test".into()),
+            AmfValue::String("test".into())
+        );
+    }
 }

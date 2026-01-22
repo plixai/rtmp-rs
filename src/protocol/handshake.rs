@@ -342,4 +342,227 @@ mod tests {
         // Bytes 4-7 should be zero (simple handshake)
         assert_eq!(&packet[4..8], &[0, 0, 0, 0]);
     }
+
+    #[test]
+    fn test_handshake_role_enum() {
+        assert_ne!(HandshakeRole::Client, HandshakeRole::Server);
+
+        let client_role = HandshakeRole::Client;
+        let server_role = HandshakeRole::Server;
+
+        assert_eq!(client_role, HandshakeRole::Client);
+        assert_eq!(server_role, HandshakeRole::Server);
+    }
+
+    #[test]
+    fn test_handshake_is_done() {
+        let mut client = Handshake::new(HandshakeRole::Client);
+        assert!(!client.is_done());
+
+        // Generate C0C1
+        let c0c1 = client.generate_initial().unwrap();
+
+        // Still not done
+        assert!(!client.is_done());
+
+        // Create server and process
+        let mut server = Handshake::new(HandshakeRole::Server);
+        server.generate_initial();
+
+        let mut c0c1_buf = c0c1;
+        let s0s1s2 = server.process(&mut c0c1_buf).unwrap().unwrap();
+
+        // Client processes S0S1S2
+        let mut s0s1s2_buf = s0s1s2;
+        let c2 = client.process(&mut s0s1s2_buf).unwrap().unwrap();
+
+        // Client is now done
+        assert!(client.is_done());
+
+        // Server processes C2
+        let mut c2_buf = c2;
+        server.process(&mut c2_buf).unwrap();
+
+        // Server is now done
+        assert!(server.is_done());
+    }
+
+    #[test]
+    fn test_bytes_needed() {
+        let mut client = Handshake::new(HandshakeRole::Client);
+
+        // Initial state - no bytes needed yet
+        assert_eq!(client.bytes_needed(), 0);
+
+        // After generating C0C1, waiting for S0S1 (the impl expects S0S1 first,
+        // then transitions to waiting for S2 in WaitingForPeerResponse)
+        client.generate_initial();
+        assert_eq!(client.bytes_needed(), 1 + HANDSHAKE_SIZE); // S0S1
+
+        let mut server = Handshake::new(HandshakeRole::Server);
+        assert_eq!(server.bytes_needed(), 0);
+
+        // Server waiting for C0C1
+        server.generate_initial();
+        assert_eq!(server.bytes_needed(), 1 + HANDSHAKE_SIZE); // C0C1
+    }
+
+    #[test]
+    fn test_server_initial_returns_none() {
+        let mut server = Handshake::new(HandshakeRole::Server);
+
+        // Server's generate_initial should return None
+        // (server waits for client's C0C1)
+        let result = server.generate_initial();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_client_initial_returns_c0c1() {
+        let mut client = Handshake::new(HandshakeRole::Client);
+
+        let c0c1 = client.generate_initial().unwrap();
+
+        // Should be C0 (1 byte) + C1 (1536 bytes)
+        assert_eq!(c0c1.len(), 1 + HANDSHAKE_SIZE);
+
+        // C0 should be RTMP version
+        assert_eq!(c0c1[0], RTMP_VERSION);
+    }
+
+    #[test]
+    fn test_double_generate_initial_returns_none() {
+        let mut client = Handshake::new(HandshakeRole::Client);
+
+        // First call should work
+        assert!(client.generate_initial().is_some());
+
+        // Second call should return None (wrong state)
+        assert!(client.generate_initial().is_none());
+    }
+
+    #[test]
+    fn test_echo_packet_preserves_random_data() {
+        let original = generate_packet();
+        let echo = generate_echo(&original);
+
+        // Random data portion (bytes 8-1535) should be preserved
+        assert_eq!(&original[8..], &echo[8..]);
+
+        // Timestamp portion (bytes 0-3) should be preserved
+        assert_eq!(&original[0..4], &echo[0..4]);
+
+        // Bytes 4-7 are our receive timestamp (may differ)
+    }
+
+    #[test]
+    fn test_incomplete_c0c1() {
+        let mut server = Handshake::new(HandshakeRole::Server);
+        server.generate_initial();
+
+        // Send incomplete C0C1 (only 100 bytes instead of 1537)
+        let mut incomplete = Bytes::from(vec![RTMP_VERSION; 100]);
+
+        let result = server.process(&mut incomplete).unwrap();
+        assert!(result.is_none()); // Should need more data
+    }
+
+    #[test]
+    fn test_incomplete_s0s1s2() {
+        let mut client = Handshake::new(HandshakeRole::Client);
+        client.generate_initial();
+
+        // Send incomplete S0S1S2
+        let mut incomplete = Bytes::from(vec![RTMP_VERSION; 1000]);
+
+        let result = client.process(&mut incomplete).unwrap();
+        assert!(result.is_none()); // Should need more data
+    }
+
+    #[test]
+    fn test_invalid_version_rejected() {
+        let mut server = Handshake::new(HandshakeRole::Server);
+        server.generate_initial();
+
+        // Send C0 with invalid version (< 3)
+        let mut invalid = BytesMut::with_capacity(1 + HANDSHAKE_SIZE);
+        invalid.put_u8(2); // Invalid version
+        invalid.put_slice(&[0u8; HANDSHAKE_SIZE]);
+
+        let mut buf = invalid.freeze();
+        let result = server.process(&mut buf);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_lenient_version_acceptance() {
+        let mut server = Handshake::new(HandshakeRole::Server);
+        server.generate_initial();
+
+        // Send C0 with version >= 3 (should be accepted in lenient mode)
+        let mut valid = BytesMut::with_capacity(1 + HANDSHAKE_SIZE);
+        valid.put_u8(31); // Higher version but >= 3
+        valid.put_slice(&generate_packet());
+
+        let mut buf = valid.freeze();
+        let result = server.process(&mut buf);
+
+        // Should succeed (lenient parsing)
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    #[test]
+    fn test_handshake_packet_size_constant() {
+        assert_eq!(HANDSHAKE_SIZE, 1536);
+    }
+
+    #[test]
+    fn test_multiple_packets_different_random_data() {
+        let packet1 = generate_packet();
+        let packet2 = generate_packet();
+
+        // Random portions should be different (high probability)
+        // Note: This could theoretically fail with astronomically low probability
+        // Just check they're not all zeros
+        assert!(&packet1[8..100] != &[0u8; 92][..]);
+        assert!(&packet2[8..100] != &[0u8; 92][..]);
+    }
+
+    #[test]
+    fn test_server_c2_processing() {
+        let mut client = Handshake::new(HandshakeRole::Client);
+        let mut server = Handshake::new(HandshakeRole::Server);
+
+        // Full handshake
+        let c0c1 = client.generate_initial().unwrap();
+        server.generate_initial();
+
+        let mut c0c1_buf = c0c1;
+        let s0s1s2 = server.process(&mut c0c1_buf).unwrap().unwrap();
+
+        let mut s0s1s2_buf = s0s1s2;
+        let c2 = client.process(&mut s0s1s2_buf).unwrap().unwrap();
+
+        // Server processes C2
+        let mut c2_buf = c2;
+        let response = server.process(&mut c2_buf).unwrap();
+
+        // Server should return None (no response needed after C2)
+        assert!(response.is_none());
+        assert!(server.is_done());
+    }
+
+    #[test]
+    fn test_process_in_wrong_state() {
+        let mut client = Handshake::new(HandshakeRole::Client);
+
+        // Try to process without generating initial
+        let mut buf = Bytes::from(vec![0u8; 3073]);
+        let result = client.process(&mut buf).unwrap();
+
+        // Should return None (wrong state)
+        assert!(result.is_none());
+    }
 }

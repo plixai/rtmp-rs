@@ -121,3 +121,99 @@ impl ServerConfig {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = ServerConfig::default();
+
+        assert_eq!(config.bind_addr.port(), 1935);
+        assert_eq!(config.max_connections, 0);
+        assert_eq!(config.chunk_size, RECOMMENDED_CHUNK_SIZE);
+        assert_eq!(config.window_ack_size, DEFAULT_WINDOW_ACK_SIZE);
+        assert_eq!(config.peer_bandwidth, DEFAULT_PEER_BANDWIDTH);
+        assert!(config.tcp_nodelay);
+        assert!(config.gop_buffer_enabled);
+    }
+
+    #[test]
+    fn test_with_addr() {
+        let addr: SocketAddr = "127.0.0.1:1936".parse().unwrap();
+        let config = ServerConfig::with_addr(addr);
+
+        assert_eq!(config.bind_addr.port(), 1936);
+    }
+
+    #[test]
+    fn test_builder_bind() {
+        let addr: SocketAddr = "0.0.0.0:8080".parse().unwrap();
+        let config = ServerConfig::default().bind(addr);
+
+        assert_eq!(config.bind_addr, addr);
+    }
+
+    #[test]
+    fn test_builder_max_connections() {
+        let config = ServerConfig::default().max_connections(100);
+
+        assert_eq!(config.max_connections, 100);
+    }
+
+    #[test]
+    fn test_builder_chunk_size() {
+        let config = ServerConfig::default().chunk_size(8192);
+
+        assert_eq!(config.chunk_size, 8192);
+    }
+
+    #[test]
+    fn test_builder_chunk_size_capped() {
+        // Chunk size should be capped at MAX_CHUNK_SIZE
+        let config = ServerConfig::default().chunk_size(u32::MAX);
+
+        assert_eq!(config.chunk_size, MAX_CHUNK_SIZE);
+    }
+
+    #[test]
+    fn test_builder_disable_gop_buffer() {
+        let config = ServerConfig::default().disable_gop_buffer();
+
+        assert!(!config.gop_buffer_enabled);
+    }
+
+    #[test]
+    fn test_builder_connection_timeout() {
+        let config = ServerConfig::default().connection_timeout(Duration::from_secs(30));
+
+        assert_eq!(config.connection_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_builder_idle_timeout() {
+        let config = ServerConfig::default().idle_timeout(Duration::from_secs(120));
+
+        assert_eq!(config.idle_timeout, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_builder_chaining() {
+        let addr: SocketAddr = "127.0.0.1:1935".parse().unwrap();
+        let config = ServerConfig::default()
+            .bind(addr)
+            .max_connections(50)
+            .chunk_size(4096)
+            .connection_timeout(Duration::from_secs(5))
+            .idle_timeout(Duration::from_secs(30))
+            .disable_gop_buffer();
+
+        assert_eq!(config.bind_addr, addr);
+        assert_eq!(config.max_connections, 50);
+        assert_eq!(config.chunk_size, 4096);
+        assert_eq!(config.connection_timeout, Duration::from_secs(5));
+        assert_eq!(config.idle_timeout, Duration::from_secs(30));
+        assert!(!config.gop_buffer_enabled);
+    }
+}

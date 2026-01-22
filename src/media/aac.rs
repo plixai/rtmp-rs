@@ -299,4 +299,280 @@ mod tests {
         assert_eq!(header[0], 0xFF);
         assert_eq!(header[1] & 0xF0, 0xF0);
     }
+
+    #[test]
+    fn test_aac_packet_type() {
+        assert_eq!(
+            AacPacketType::from_byte(0),
+            Some(AacPacketType::SequenceHeader)
+        );
+        assert_eq!(AacPacketType::from_byte(1), Some(AacPacketType::Raw));
+        assert_eq!(AacPacketType::from_byte(2), None);
+        assert_eq!(AacPacketType::from_byte(255), None);
+    }
+
+    #[test]
+    fn test_aac_profile_from_object_type() {
+        assert_eq!(AacProfile::from_object_type(1), Some(AacProfile::Main));
+        assert_eq!(AacProfile::from_object_type(2), Some(AacProfile::Lc));
+        assert_eq!(AacProfile::from_object_type(3), Some(AacProfile::Ssr));
+        assert_eq!(AacProfile::from_object_type(4), Some(AacProfile::Ltp));
+        assert_eq!(AacProfile::from_object_type(5), Some(AacProfile::Sbr));
+        assert_eq!(AacProfile::from_object_type(6), Some(AacProfile::Scalable));
+        assert_eq!(AacProfile::from_object_type(0), None);
+        assert_eq!(AacProfile::from_object_type(7), None);
+    }
+
+    #[test]
+    fn test_aac_profile_names() {
+        assert_eq!(AacProfile::Main.name(), "AAC Main");
+        assert_eq!(AacProfile::Lc.name(), "AAC LC");
+        assert_eq!(AacProfile::Ssr.name(), "AAC SSR");
+        assert_eq!(AacProfile::Ltp.name(), "AAC LTP");
+        assert_eq!(AacProfile::Sbr.name(), "HE-AAC");
+        assert_eq!(AacProfile::Scalable.name(), "AAC Scalable");
+    }
+
+    #[test]
+    fn test_audio_specific_config_various_rates() {
+        // AudioSpecificConfig bit layout:
+        // - audioObjectType: 5 bits
+        // - samplingFrequencyIndex: 4 bits
+        // - channelConfiguration: 4 bits
+        //
+        // For [0x12, 0x10]:
+        // b0 = 0001_0010, b1 = 0001_0000
+        // audioObjectType = (0x12 >> 3) = 2 (AAC-LC)
+        // samplingFrequencyIndex = ((0x12 & 7) << 1) | (0x10 >> 7) = 4 (44100 Hz)
+        // channelConfiguration = (0x10 >> 3) & 0xF = 2 (stereo)
+
+        // Test cases: [bytes], expected_freq, expected_channels
+        let test_cases = [
+            // AAC-LC, 44.1kHz, stereo
+            (&[0x12, 0x10][..], 44100, 2),
+            // AAC-LC, 48kHz, stereo: obj=2, freq_idx=3, ch=2
+            // freq_idx 3 = 48000 Hz
+            // b0 = (2 << 3) | (3 >> 1) = 0x11, b1 = ((3 & 1) << 7) | (2 << 3) = 0x90
+            (&[0x11, 0x90][..], 48000, 2),
+            // AAC-LC, 48kHz, mono: obj=2, freq_idx=3, ch=1
+            // b0 = (2 << 3) | (3 >> 1) = 0x11, b1 = ((3 & 1) << 7) | (1 << 3) = 0x88
+            (&[0x11, 0x88][..], 48000, 1),
+        ];
+
+        for (data, expected_freq, expected_channels) in test_cases {
+            let config = AudioSpecificConfig::parse(Bytes::copy_from_slice(data)).unwrap();
+            assert_eq!(
+                config.sampling_frequency, expected_freq,
+                "sampling_frequency mismatch for {:02X?}",
+                data
+            );
+            assert_eq!(
+                config.channel_configuration, expected_channels,
+                "channel_configuration mismatch for {:02X?}",
+                data
+            );
+        }
+    }
+
+    #[test]
+    fn test_audio_specific_config_channels() {
+        let config = AudioSpecificConfig {
+            audio_object_type: 2,
+            sampling_frequency_index: 4,
+            sampling_frequency: 44100,
+            channel_configuration: 0, // Defined in stream
+            frame_length_flag: false,
+            depends_on_core_coder: false,
+            extension_flag: false,
+            raw: Bytes::new(),
+        };
+        assert_eq!(config.channels(), 0);
+
+        // Test various channel configurations
+        let channel_tests = [
+            (1, 1), // Mono
+            (2, 2), // Stereo
+            (3, 3), // 3.0
+            (4, 4), // 4.0
+            (5, 5), // 5.0
+            (6, 6), // 5.1
+            (7, 8), // 7.1
+            (8, 0), // Unknown
+        ];
+
+        for (config_value, expected_channels) in channel_tests {
+            let config = AudioSpecificConfig {
+                audio_object_type: 2,
+                sampling_frequency_index: 4,
+                sampling_frequency: 44100,
+                channel_configuration: config_value,
+                frame_length_flag: false,
+                depends_on_core_coder: false,
+                extension_flag: false,
+                raw: Bytes::new(),
+            };
+            assert_eq!(config.channels(), expected_channels);
+        }
+    }
+
+    #[test]
+    fn test_audio_specific_config_samples_per_frame() {
+        let config_1024 = AudioSpecificConfig {
+            audio_object_type: 2,
+            sampling_frequency_index: 4,
+            sampling_frequency: 44100,
+            channel_configuration: 2,
+            frame_length_flag: false, // 1024 samples
+            depends_on_core_coder: false,
+            extension_flag: false,
+            raw: Bytes::new(),
+        };
+        assert_eq!(config_1024.samples_per_frame(), 1024);
+
+        let config_960 = AudioSpecificConfig {
+            audio_object_type: 2,
+            sampling_frequency_index: 4,
+            sampling_frequency: 44100,
+            channel_configuration: 2,
+            frame_length_flag: true, // 960 samples
+            depends_on_core_coder: false,
+            extension_flag: false,
+            raw: Bytes::new(),
+        };
+        assert_eq!(config_960.samples_per_frame(), 960);
+    }
+
+    #[test]
+    fn test_audio_specific_config_profile() {
+        let config = AudioSpecificConfig {
+            audio_object_type: 2, // AAC LC
+            sampling_frequency_index: 4,
+            sampling_frequency: 44100,
+            channel_configuration: 2,
+            frame_length_flag: false,
+            depends_on_core_coder: false,
+            extension_flag: false,
+            raw: Bytes::new(),
+        };
+        assert_eq!(config.profile(), Some(AacProfile::Lc));
+
+        let config_unknown = AudioSpecificConfig {
+            audio_object_type: 99, // Unknown
+            sampling_frequency_index: 4,
+            sampling_frequency: 44100,
+            channel_configuration: 2,
+            frame_length_flag: false,
+            depends_on_core_coder: false,
+            extension_flag: false,
+            raw: Bytes::new(),
+        };
+        assert!(config_unknown.profile().is_none());
+    }
+
+    #[test]
+    fn test_aac_data_sequence_header() {
+        let data = Bytes::from_static(&[
+            0x00, // Sequence header
+            0x12, 0x10, // AudioSpecificConfig: AAC LC, 44.1kHz, stereo
+        ]);
+
+        let aac = AacData::parse(data).unwrap();
+        assert!(aac.is_sequence_header());
+
+        if let AacData::SequenceHeader(config) = aac {
+            assert_eq!(config.audio_object_type, 2);
+            assert_eq!(config.sampling_frequency, 44100);
+            assert_eq!(config.channel_configuration, 2);
+        } else {
+            panic!("Expected SequenceHeader");
+        }
+    }
+
+    #[test]
+    fn test_aac_data_raw_frame() {
+        let data = Bytes::from_static(&[
+            0x01, // Raw frame
+            0x21, 0x00, 0x49, 0x90, 0x02, // AAC frame data
+        ]);
+
+        let aac = AacData::parse(data).unwrap();
+        assert!(!aac.is_sequence_header());
+
+        if let AacData::Frame { data } = aac {
+            assert_eq!(data.len(), 5);
+        } else {
+            panic!("Expected Frame");
+        }
+    }
+
+    #[test]
+    fn test_aac_data_invalid_packet_type() {
+        let data = Bytes::from_static(&[0x02, 0x00, 0x00]); // Invalid type
+        let result = AacData::parse(data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_aac_data_empty() {
+        let data = Bytes::new();
+        let result = AacData::parse(data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_audio_specific_config_too_short() {
+        let data = Bytes::from_static(&[0x12]); // Only 1 byte
+        let result = AudioSpecificConfig::parse(data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_adts_header_frame_length() {
+        let config = AudioSpecificConfig {
+            audio_object_type: 2,
+            sampling_frequency_index: 4,
+            sampling_frequency: 44100,
+            channel_configuration: 2,
+            frame_length_flag: false,
+            depends_on_core_coder: false,
+            extension_flag: false,
+            raw: Bytes::new(),
+        };
+
+        // Test with different frame lengths
+        let header1 = generate_adts_header(&config, 100);
+        let header2 = generate_adts_header(&config, 500);
+
+        // Headers should differ (frame length encoded in bytes 3-5)
+        assert_ne!(header1, header2);
+
+        // Both should have correct syncword
+        assert_eq!(header1[0], 0xFF);
+        assert_eq!(header2[0], 0xFF);
+    }
+
+    #[test]
+    fn test_audio_specific_config_all_sampling_frequencies() {
+        // Test the sampling frequency index lookup
+        let expected_freqs = [
+            96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
+        ];
+
+        for (index, &expected) in expected_freqs.iter().enumerate() {
+            if index < 13 {
+                // First 13 indices have defined frequencies
+                let freq = AudioSpecificConfig::SAMPLING_FREQUENCIES[index];
+                assert_eq!(freq, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn test_aac_data_raw_stores_config_bytes() {
+        let raw_data = Bytes::from_static(&[0x12, 0x10]);
+        let config = AudioSpecificConfig::parse(raw_data.clone()).unwrap();
+
+        // The raw field should contain the original bytes
+        assert_eq!(config.raw.len(), 2);
+    }
 }
