@@ -55,6 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         keyframes += 1;
                         println!("  Keyframe at {}", timestamp);
                     }
+                    println!("  Video frame timestamp: {}", timestamp);
                     if video_frames % 100 == 0 {
                         println!(
                             "Progress: {} video, {} audio, {} keyframes",
@@ -62,7 +63,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                     }
                 }
-                ClientEvent::AudioFrame { timestamp: _, data: _ } => {
+                ClientEvent::AudioFrame { timestamp, data } => {
+                    println!("  Audio frame timestamp: {}", timestamp);
                     audio_frames += 1;
                 }
                 ClientEvent::VideoTag(_) | ClientEvent::AudioTag(_) => {
