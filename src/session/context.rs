@@ -95,7 +95,12 @@ pub struct StreamContext {
 
 impl StreamContext {
     /// Create a new stream context
-    pub fn new(session: SessionContext, stream_id: u32, stream_key: String, is_publishing: bool) -> Self {
+    pub fn new(
+        session: SessionContext,
+        stream_id: u32,
+        stream_key: String,
+        is_publishing: bool,
+    ) -> Self {
         Self {
             session,
             stream_id,

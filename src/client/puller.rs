@@ -21,16 +21,10 @@ pub enum ClientEvent {
     Metadata(std::collections::HashMap<String, crate::amf::AmfValue>),
 
     /// Video frame received
-    VideoFrame {
-        timestamp: u32,
-        data: H264Data,
-    },
+    VideoFrame { timestamp: u32, data: H264Data },
 
     /// Audio frame received
-    AudioFrame {
-        timestamp: u32,
-        data: AacData,
-    },
+    AudioFrame { timestamp: u32, data: AacData },
 
     /// Raw video tag (if configured)
     VideoTag(FlvTag),
@@ -85,7 +79,9 @@ impl RtmpPuller {
         let _ = tx.send(ClientEvent::Connected).await;
 
         // Get stream name from URL
-        let stream_name = self.config.parse_url()
+        let stream_name = self
+            .config
+            .parse_url()
             .and_then(|u| u.stream_key)
             .unwrap_or_default();
 
@@ -122,10 +118,12 @@ impl RtmpPuller {
                 // Parse and send frame
                 if data.len() >= 2 && (data[0] & 0x0F) == 7 {
                     if let Ok(h264) = H264Data::parse(data.slice(1..)) {
-                        let _ = tx.send(ClientEvent::VideoFrame {
-                            timestamp,
-                            data: h264,
-                        }).await;
+                        let _ = tx
+                            .send(ClientEvent::VideoFrame {
+                                timestamp,
+                                data: h264,
+                            })
+                            .await;
                     }
                 }
             }
@@ -138,10 +136,12 @@ impl RtmpPuller {
                 // Parse and send frame
                 if data.len() >= 2 && (data[0] >> 4) == 10 {
                     if let Ok(aac) = AacData::parse(data.slice(1..)) {
-                        let _ = tx.send(ClientEvent::AudioFrame {
-                            timestamp,
-                            data: aac,
-                        }).await;
+                        let _ = tx
+                            .send(ClientEvent::AudioFrame {
+                                timestamp,
+                                data: aac,
+                            })
+                            .await;
                     }
                 }
             }
@@ -176,4 +176,3 @@ impl RtmpPuller {
         true
     }
 }
-

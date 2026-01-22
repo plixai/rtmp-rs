@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::amf::AmfValue;
 use crate::media::{AacData, FlvTag, H264Data};
-use crate::protocol::message::{ConnectParams, PublishParams, PlayParams};
+use crate::protocol::message::{ConnectParams, PlayParams, PublishParams};
 use crate::session::{SessionContext, StreamContext};
 
 /// Result of authentication/authorization checks
@@ -211,10 +211,7 @@ impl RtmpHandler for LoggingHandler {
     }
 
     async fn on_disconnect(&self, ctx: &SessionContext) {
-        tracing::info!(
-            session_id = ctx.session_id,
-            "Connection closed"
-        );
+        tracing::info!(session_id = ctx.session_id, "Connection closed");
     }
 }
 

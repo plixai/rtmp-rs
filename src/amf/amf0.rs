@@ -28,8 +28,8 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::collections::HashMap;
 
-use crate::error::AmfError;
 use super::value::AmfValue;
+use crate::error::AmfError;
 
 // AMF0 type markers
 const MARKER_NUMBER: u8 = 0x00;
@@ -335,7 +335,10 @@ impl Amf0Decoder {
             properties.insert(key, value);
         }
 
-        let obj = AmfValue::TypedObject { class_name, properties };
+        let obj = AmfValue::TypedObject {
+            class_name,
+            properties,
+        };
         self.references[obj_index] = obj.clone();
         Ok(obj)
     }
@@ -482,7 +485,10 @@ impl Amf0Encoder {
                 self.buf.put_u32(s.len() as u32);
                 self.buf.put_slice(s.as_bytes());
             }
-            AmfValue::TypedObject { class_name, properties } => {
+            AmfValue::TypedObject {
+                class_name,
+                properties,
+            } => {
                 self.buf.put_u8(MARKER_TYPED_OBJECT);
                 self.write_utf8(class_name);
                 for (key, val) in properties {

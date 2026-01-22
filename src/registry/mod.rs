@@ -145,9 +145,7 @@ impl BroadcastFrame {
                 let is_header = tag.is_aac_sequence_header();
                 Self::audio(tag.timestamp, tag.data.clone(), is_header)
             }
-            crate::media::flv::FlvTagType::Script => {
-                Self::metadata(tag.data.clone())
-            }
+            crate::media::flv::FlvTagType::Script => Self::metadata(tag.data.clone()),
         }
     }
 }
@@ -585,16 +583,19 @@ impl StreamRegistry {
                     let should_remove = match entry.state {
                         StreamState::GracePeriod => {
                             if let Some(disconnected_at) = entry.publisher_disconnected_at {
-                                now.duration_since(disconnected_at) > self.config.publisher_grace_period
+                                now.duration_since(disconnected_at)
+                                    > self.config.publisher_grace_period
                             } else {
                                 false
                             }
                         }
                         StreamState::Idle => {
                             if let Some(disconnected_at) = entry.publisher_disconnected_at {
-                                now.duration_since(disconnected_at) > self.config.idle_stream_timeout
+                                now.duration_since(disconnected_at)
+                                    > self.config.idle_stream_timeout
                             } else {
-                                now.duration_since(entry.created_at) > self.config.idle_stream_timeout
+                                now.duration_since(entry.created_at)
+                                    > self.config.idle_stream_timeout
                             }
                         }
                         StreamState::Active => false,
@@ -670,7 +671,10 @@ mod tests {
 
         // Can't register another publisher
         let result = registry.register_publisher(&key, 2).await;
-        assert!(matches!(result, Err(RegistryError::StreamAlreadyPublishing(_))));
+        assert!(matches!(
+            result,
+            Err(RegistryError::StreamAlreadyPublishing(_))
+        ));
     }
 
     #[tokio::test]
@@ -703,8 +707,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_grace_period() {
-        let config = RegistryConfig::default()
-            .publisher_grace_period(std::time::Duration::from_millis(100));
+        let config =
+            RegistryConfig::default().publisher_grace_period(std::time::Duration::from_millis(100));
         let registry = StreamRegistry::with_config(config);
         let key = StreamKey::new("live", "test_stream");
 

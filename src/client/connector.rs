@@ -34,7 +34,8 @@ pub struct RtmpConnector {
 impl RtmpConnector {
     /// Connect to an RTMP server
     pub async fn connect(config: ClientConfig) -> Result<Self> {
-        let parsed_url = config.parse_url()
+        let parsed_url = config
+            .parse_url()
             .ok_or_else(|| Error::Config("Invalid RTMP URL".into()))?;
 
         let addr = format!("{}:{}", parsed_url.host, parsed_url.port);
@@ -73,8 +74,9 @@ impl RtmpConnector {
         let mut handshake = Handshake::new(HandshakeRole::Client);
 
         // Send C0C1
-        let c0c1 = handshake.generate_initial()
-            .ok_or(Error::Protocol(crate::error::ProtocolError::InvalidChunkHeader))?;
+        let c0c1 = handshake.generate_initial().ok_or(Error::Protocol(
+            crate::error::ProtocolError::InvalidChunkHeader,
+        ))?;
         self.writer.write_all(&c0c1).await?;
         self.writer.flush().await?;
 
@@ -101,7 +103,9 @@ impl RtmpConnector {
                 }
             }
             Ok::<_, Error>(())
-        }).await.map_err(|_| Error::Timeout)??;
+        })
+        .await
+        .map_err(|_| Error::Timeout)??;
 
         Ok(())
     }
@@ -109,10 +113,19 @@ impl RtmpConnector {
     /// Send connect command
     async fn do_connect(&mut self) -> Result<()> {
         let mut obj = HashMap::new();
-        obj.insert("app".to_string(), AmfValue::String(self.parsed_url.app.clone()));
+        obj.insert(
+            "app".to_string(),
+            AmfValue::String(self.parsed_url.app.clone()),
+        );
         obj.insert("type".to_string(), AmfValue::String("nonprivate".into()));
-        obj.insert("flashVer".to_string(), AmfValue::String(self.config.flash_ver.clone()));
-        obj.insert("tcUrl".to_string(), AmfValue::String(self.config.url.clone()));
+        obj.insert(
+            "flashVer".to_string(),
+            AmfValue::String(self.config.flash_ver.clone()),
+        );
+        obj.insert(
+            "tcUrl".to_string(),
+            AmfValue::String(self.config.url.clone()),
+        );
         obj.insert("fpad".to_string(), AmfValue::Boolean(false));
         obj.insert("capabilities".to_string(), AmfValue::Number(15.0));
         obj.insert("audioCodecs".to_string(), AmfValue::Number(3191.0));
@@ -152,7 +165,8 @@ impl RtmpConnector {
 
         // Set our chunk size
         self.chunk_encoder.set_chunk_size(RECOMMENDED_CHUNK_SIZE);
-        self.send_message(&RtmpMessage::SetChunkSize(RECOMMENDED_CHUNK_SIZE)).await?;
+        self.send_message(&RtmpMessage::SetChunkSize(RECOMMENDED_CHUNK_SIZE))
+            .await?;
 
         Ok(())
     }
@@ -194,8 +208,9 @@ impl RtmpConnector {
             crate::protocol::message::UserControlEvent::SetBufferLength {
                 stream_id: self.stream_id,
                 buffer_ms: self.config.buffer_length,
-            }
-        )).await?;
+            },
+        ))
+        .await?;
 
         // Send play command
         let cmd = Command {
@@ -204,8 +219,8 @@ impl RtmpConnector {
             command_object: AmfValue::Null,
             arguments: vec![
                 AmfValue::String(stream_name.to_string()),
-                AmfValue::Number(-2.0), // Start: live or recorded
-                AmfValue::Number(-1.0), // Duration: play until end
+                AmfValue::Number(-2.0),  // Start: live or recorded
+                AmfValue::Number(-1.0),  // Duration: play until end
                 AmfValue::Boolean(true), // Reset
             ],
             stream_id: self.stream_id,

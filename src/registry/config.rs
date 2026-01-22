@@ -39,13 +39,13 @@ pub struct RegistryConfig {
 impl Default for RegistryConfig {
     fn default() -> Self {
         Self {
-            broadcast_capacity: 128,         // ~4 seconds @ 30fps
+            broadcast_capacity: 128, // ~4 seconds @ 30fps
             publisher_grace_period: Duration::from_secs(10),
             idle_stream_timeout: Duration::from_secs(30),
-            max_gop_size: 4 * 1024 * 1024,   // 4MB
+            max_gop_size: 4 * 1024 * 1024, // 4MB
             cleanup_interval: Duration::from_secs(5),
             max_consecutive_lag_events: 10,
-            lag_threshold_low: 30,           // ~1 second @ 30fps
+            lag_threshold_low: 30, // ~1 second @ 30fps
         }
     }
 }

@@ -151,14 +151,8 @@ impl<H: RtmpHandler> RtmpServer<H> {
         let registry = Arc::clone(&self.registry);
 
         tokio::spawn(async move {
-            let mut connection = Connection::new(
-                session_id,
-                socket,
-                peer_addr,
-                config,
-                handler,
-                registry,
-            );
+            let mut connection =
+                Connection::new(session_id, socket, peer_addr, config, handler, registry);
 
             if let Err(e) = connection.run().await {
                 tracing::debug!(

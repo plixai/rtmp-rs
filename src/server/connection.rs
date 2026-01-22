@@ -1037,8 +1037,7 @@ impl<H: RtmpHandler> Connection<H> {
             .as_ref()
             .map(|k| k.name.clone())
             .unwrap_or_default();
-        let stream_ctx =
-            StreamContext::new(self.context.clone(), stream_id, stream_key, false);
+        let stream_ctx = StreamContext::new(self.context.clone(), stream_id, stream_key, false);
         self.handler.on_pause(&stream_ctx).await;
 
         tracing::info!(session_id = self.state.id, "Subscriber paused");
@@ -1059,8 +1058,7 @@ impl<H: RtmpHandler> Connection<H> {
         self.skip_audio_until_keyframe = true;
 
         // Send onStatus(NetStream.Unpause.Notify)
-        let status =
-            Command::on_status(stream_id, "status", NS_UNPAUSE_NOTIFY, "Playback resumed");
+        let status = Command::on_status(stream_id, "status", NS_UNPAUSE_NOTIFY, "Playback resumed");
         self.send_command(CSID_COMMAND, stream_id, &status).await?;
 
         // Send StreamBegin to indicate data resuming
@@ -1098,8 +1096,7 @@ impl<H: RtmpHandler> Connection<H> {
             .as_ref()
             .map(|k| k.name.clone())
             .unwrap_or_default();
-        let stream_ctx =
-            StreamContext::new(self.context.clone(), stream_id, stream_key, false);
+        let stream_ctx = StreamContext::new(self.context.clone(), stream_id, stream_key, false);
         self.handler.on_unpause(&stream_ctx).await;
 
         tracing::info!(

@@ -47,11 +47,11 @@ pub mod session;
 pub mod stats;
 
 // Re-export main types for convenience
+pub use client::config::ClientConfig;
+pub use client::connector::RtmpConnector;
+pub use client::puller::{ClientEvent, RtmpPuller};
 pub use error::{Error, Result};
+pub use registry::{BroadcastFrame, RegistryConfig, StreamKey, StreamRegistry};
+pub use server::config::ServerConfig;
 pub use server::handler::{AuthResult, RtmpHandler};
 pub use server::listener::RtmpServer;
-pub use server::config::ServerConfig;
-pub use client::connector::RtmpConnector;
-pub use client::puller::{RtmpPuller, ClientEvent};
-pub use client::config::ClientConfig;
-pub use registry::{StreamRegistry, StreamKey, BroadcastFrame, RegistryConfig};

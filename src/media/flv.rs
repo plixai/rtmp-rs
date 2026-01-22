@@ -28,7 +28,6 @@
 
 use bytes::Bytes;
 
-
 /// FLV tag type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlvTagType {
@@ -76,7 +75,10 @@ impl VideoFrameType {
     }
 
     pub fn is_keyframe(&self) -> bool {
-        matches!(self, VideoFrameType::Keyframe | VideoFrameType::GeneratedKeyframe)
+        matches!(
+            self,
+            VideoFrameType::Keyframe | VideoFrameType::GeneratedKeyframe
+        )
     }
 }
 
@@ -294,11 +296,17 @@ mod tests {
     #[test]
     fn test_video_frame_type() {
         // Keyframe + AVC
-        assert_eq!(VideoFrameType::from_byte(0x17), Some(VideoFrameType::Keyframe));
+        assert_eq!(
+            VideoFrameType::from_byte(0x17),
+            Some(VideoFrameType::Keyframe)
+        );
         assert_eq!(VideoCodec::from_byte(0x17), Some(VideoCodec::Avc));
 
         // Inter frame + AVC
-        assert_eq!(VideoFrameType::from_byte(0x27), Some(VideoFrameType::InterFrame));
+        assert_eq!(
+            VideoFrameType::from_byte(0x27),
+            Some(VideoFrameType::InterFrame)
+        );
     }
 
     #[test]

@@ -26,8 +26,8 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::collections::HashMap;
 
-use crate::error::AmfError;
 use super::value::AmfValue;
+use crate::error::AmfError;
 
 // AMF3 type markers
 const MARKER_UNDEFINED: u8 = 0x00;
@@ -479,7 +479,10 @@ impl Amf3Encoder {
                 }
                 self.write_string(""); // End marker
             }
-            AmfValue::TypedObject { class_name, properties } => {
+            AmfValue::TypedObject {
+                class_name,
+                properties,
+            } => {
                 self.buf.put_u8(MARKER_OBJECT);
                 let header = (0 << 4) | (1 << 3) | (1 << 2) | (1 << 1) | 1;
                 self.write_u29(header);

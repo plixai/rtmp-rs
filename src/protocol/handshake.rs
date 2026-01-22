@@ -132,12 +132,8 @@ impl Handshake {
     /// For server receiving C2: returns None (handshake done)
     pub fn process(&mut self, data: &mut Bytes) -> Result<Option<Bytes>> {
         match self.state {
-            HandshakeState::WaitingForPeerPacket => {
-                self.process_peer_packet(data)
-            }
-            HandshakeState::WaitingForPeerResponse => {
-                self.process_peer_response(data)
-            }
+            HandshakeState::WaitingForPeerPacket => self.process_peer_packet(data),
+            HandshakeState::WaitingForPeerResponse => self.process_peer_response(data),
             _ => Ok(None),
         }
     }
@@ -305,18 +301,26 @@ mod tests {
         let mut server = Handshake::new(HandshakeRole::Server);
 
         // Client generates C0C1
-        let c0c1 = client.generate_initial().expect("Client should generate C0C1");
+        let c0c1 = client
+            .generate_initial()
+            .expect("Client should generate C0C1");
         assert_eq!(c0c1.len(), 1 + HANDSHAKE_SIZE);
 
         // Server receives C0C1, generates S0S1S2
         let mut c0c1_buf = c0c1;
         server.generate_initial(); // Move server to waiting state
-        let s0s1s2 = server.process(&mut c0c1_buf).unwrap().expect("Server should generate S0S1S2");
+        let s0s1s2 = server
+            .process(&mut c0c1_buf)
+            .unwrap()
+            .expect("Server should generate S0S1S2");
         assert_eq!(s0s1s2.len(), 1 + HANDSHAKE_SIZE * 2);
 
         // Client receives S0S1S2, generates C2
         let mut s0s1s2_buf = s0s1s2;
-        let c2 = client.process(&mut s0s1s2_buf).unwrap().expect("Client should generate C2");
+        let c2 = client
+            .process(&mut s0s1s2_buf)
+            .unwrap()
+            .expect("Client should generate C2");
         assert_eq!(c2.len(), HANDSHAKE_SIZE);
         assert!(client.is_done());
 

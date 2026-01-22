@@ -256,9 +256,7 @@ impl H264Data {
                     nalus: data,
                 })
             }
-            Some(AvcPacketType::EndOfSequence) => {
-                Ok(H264Data::EndOfSequence)
-            }
+            Some(AvcPacketType::EndOfSequence) => Ok(H264Data::EndOfSequence),
             None => Err(MediaError::InvalidAvcPacket.into()),
         }
     }

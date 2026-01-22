@@ -103,8 +103,8 @@ pub struct AudioSpecificConfig {
 impl AudioSpecificConfig {
     /// Standard sampling frequencies by index
     const SAMPLING_FREQUENCIES: [u32; 16] = [
-        96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
-        16000, 12000, 11025, 8000, 7350, 0, 0, 0,
+        96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350, 0,
+        0, 0,
     ];
 
     /// Parse from AAC sequence header data
@@ -181,7 +181,11 @@ impl AudioSpecificConfig {
 
     /// Get samples per frame
     pub fn samples_per_frame(&self) -> u32 {
-        if self.frame_length_flag { 960 } else { 1024 }
+        if self.frame_length_flag {
+            960
+        } else {
+            1024
+        }
     }
 }
 
@@ -212,9 +216,7 @@ impl AacData {
                 let config = AudioSpecificConfig::parse(data)?;
                 Ok(AacData::SequenceHeader(config))
             }
-            Some(AacPacketType::Raw) => {
-                Ok(AacData::Frame { data })
-            }
+            Some(AacPacketType::Raw) => Ok(AacData::Frame { data }),
             None => Err(MediaError::InvalidAacPacket.into()),
         }
     }
@@ -243,13 +245,10 @@ pub fn generate_adts_header(config: &AudioSpecificConfig, frame_length: usize) -
     header[1] = 0xF1; // MPEG-4, Layer 0, no CRC
 
     // Profile (2 bits) + Freq (4 bits) + Private (1 bit) + Channels (1 bit)
-    header[2] = ((profile & 0x03) << 6)
-        | ((freq_idx & 0x0F) << 2)
-        | ((channels >> 2) & 0x01);
+    header[2] = ((profile & 0x03) << 6) | ((freq_idx & 0x0F) << 2) | ((channels >> 2) & 0x01);
 
     // Channels (3 bits) + Original (1 bit) + Home (1 bit) + Copyright (1 bit) + Length (2 bits)
-    header[3] = ((channels & 0x03) << 6)
-        | ((frame_len >> 11) & 0x03) as u8;
+    header[3] = ((channels & 0x03) << 6) | ((frame_len >> 11) & 0x03) as u8;
 
     // Length (8 bits)
     header[4] = ((frame_len >> 3) & 0xFF) as u8;

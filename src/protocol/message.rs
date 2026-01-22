@@ -223,19 +223,21 @@ impl RtmpMessage {
                 if payload.len() < 4 {
                     return Err(ProtocolError::InvalidChunkHeader.into());
                 }
-                Ok(RtmpMessage::Abort { csid: payload.get_u32() })
+                Ok(RtmpMessage::Abort {
+                    csid: payload.get_u32(),
+                })
             }
 
             MSG_ACKNOWLEDGEMENT => {
                 if payload.len() < 4 {
                     return Err(ProtocolError::InvalidChunkHeader.into());
                 }
-                Ok(RtmpMessage::Acknowledgement { sequence: payload.get_u32() })
+                Ok(RtmpMessage::Acknowledgement {
+                    sequence: payload.get_u32(),
+                })
             }
 
-            MSG_USER_CONTROL => {
-                Self::parse_user_control(&mut payload)
-            }
+            MSG_USER_CONTROL => Self::parse_user_control(&mut payload),
 
             MSG_WINDOW_ACK_SIZE => {
                 if payload.len() < 4 {
@@ -253,19 +255,15 @@ impl RtmpMessage {
                 Ok(RtmpMessage::SetPeerBandwidth { size, limit_type })
             }
 
-            MSG_AUDIO => {
-                Ok(RtmpMessage::Audio {
-                    timestamp: chunk.timestamp,
-                    data: payload,
-                })
-            }
+            MSG_AUDIO => Ok(RtmpMessage::Audio {
+                timestamp: chunk.timestamp,
+                data: payload,
+            }),
 
-            MSG_VIDEO => {
-                Ok(RtmpMessage::Video {
-                    timestamp: chunk.timestamp,
-                    data: payload,
-                })
-            }
+            MSG_VIDEO => Ok(RtmpMessage::Video {
+                timestamp: chunk.timestamp,
+                data: payload,
+            }),
 
             MSG_COMMAND_AMF0 => {
                 let cmd = Self::parse_command(&mut payload, chunk.stream_id)?;
@@ -294,16 +292,12 @@ impl RtmpMessage {
                 Ok(RtmpMessage::DataAmf3(data))
             }
 
-            MSG_AGGREGATE => {
-                Ok(RtmpMessage::Aggregate { data: payload })
-            }
+            MSG_AGGREGATE => Ok(RtmpMessage::Aggregate { data: payload }),
 
-            _ => {
-                Ok(RtmpMessage::Unknown {
-                    type_id: chunk.message_type,
-                    data: payload,
-                })
-            }
+            _ => Ok(RtmpMessage::Unknown {
+                type_id: chunk.message_type,
+                data: payload,
+            }),
         }
     }
 
@@ -324,7 +318,10 @@ impl RtmpMessage {
                 }
                 let stream_id = payload.get_u32();
                 let buffer_ms = payload.get_u32();
-                UserControlEvent::SetBufferLength { stream_id, buffer_ms }
+                UserControlEvent::SetBufferLength {
+                    stream_id,
+                    buffer_ms,
+                }
             }
             UC_STREAM_IS_RECORDED => UserControlEvent::StreamIsRecorded(payload.get_u32()),
             UC_PING_REQUEST => UserControlEvent::PingRequest(payload.get_u32()),
@@ -400,7 +397,11 @@ impl RtmpMessage {
             }
         }
 
-        Ok(DataMessage { name, values, stream_id })
+        Ok(DataMessage {
+            name,
+            values,
+            stream_id,
+        })
     }
 
     /// Encode message to chunk payload
@@ -452,7 +453,10 @@ impl RtmpMessage {
                         buf.put_u16(UC_STREAM_DRY);
                         buf.put_u32(*id);
                     }
-                    UserControlEvent::SetBufferLength { stream_id, buffer_ms } => {
+                    UserControlEvent::SetBufferLength {
+                        stream_id,
+                        buffer_ms,
+                    } => {
                         buf.put_u16(UC_SET_BUFFER_LENGTH);
                         buf.put_u32(*stream_id);
                         buf.put_u32(*buffer_ms);
@@ -477,13 +481,9 @@ impl RtmpMessage {
                 (MSG_USER_CONTROL, buf.freeze())
             }
 
-            RtmpMessage::Audio { data, .. } => {
-                (MSG_AUDIO, data.clone())
-            }
+            RtmpMessage::Audio { data, .. } => (MSG_AUDIO, data.clone()),
 
-            RtmpMessage::Video { data, .. } => {
-                (MSG_VIDEO, data.clone())
-            }
+            RtmpMessage::Video { data, .. } => (MSG_VIDEO, data.clone()),
 
             RtmpMessage::Command(cmd) => {
                 let payload = encode_command(cmd);
@@ -509,13 +509,9 @@ impl RtmpMessage {
                 (MSG_DATA_AMF3, buf.freeze())
             }
 
-            RtmpMessage::Aggregate { data } => {
-                (MSG_AGGREGATE, data.clone())
-            }
+            RtmpMessage::Aggregate { data } => (MSG_AGGREGATE, data.clone()),
 
-            RtmpMessage::Unknown { type_id, data } => {
-                (*type_id, data.clone())
-            }
+            RtmpMessage::Unknown { type_id, data } => (*type_id, data.clone()),
         }
     }
 }
@@ -571,7 +567,10 @@ impl Command {
         let mut info = HashMap::new();
         info.insert("level".to_string(), AmfValue::String(level.to_string()));
         info.insert("code".to_string(), AmfValue::String(code.to_string()));
-        info.insert("description".to_string(), AmfValue::String(description.to_string()));
+        info.insert(
+            "description".to_string(),
+            AmfValue::String(description.to_string()),
+        );
 
         Command {
             name: CMD_ON_STATUS.to_string(),
@@ -591,7 +590,10 @@ mod tests {
     fn test_connect_params_parsing() {
         let mut obj = HashMap::new();
         obj.insert("app".to_string(), AmfValue::String("live".into()));
-        obj.insert("tcUrl".to_string(), AmfValue::String("rtmp://localhost/live".into()));
+        obj.insert(
+            "tcUrl".to_string(),
+            AmfValue::String("rtmp://localhost/live".into()),
+        );
         obj.insert("objectEncoding".to_string(), AmfValue::Number(0.0));
 
         let params = ConnectParams::from_amf(&AmfValue::Object(obj));
