@@ -7,13 +7,16 @@
 
 **rtmp-rs** is an RTMP server library written in Rust, built to handle the messy reality of live streaming. Encoders like OBS and FFmpeg all have their quirks, so rtmp-rs uses lenient parsing to roll with it instead of rejecting non-conforming streams. Late joiners get instant playback with keyframe caching, and backpressure handling keeps things smooth when subscribers go sluggish. If you're building a streaming service or relay and want RTMP ingest that just works, this might be what you're looking for.
 
-> This repo is a Rust port of my [RTMP Go server](https://github.com/torresjeff/rtmp), which was my first time dabbling in video codecs and streaming. Almost all of the code in this Rust version was written by AI (Claude Opus 4.5).
->
-> I recently had an idea that required an RTMP server, so I used it as an excuse to write some Rust and try out some agentic programming. This repo is partly an experiment to see how far I could get by vibecoding the entire thing with Claude Code. The answer? **Far!**
-> 
-> The whole thing took around 8 hours. It probably could have been faster if I auto-accepted edits without reading the code, but I like to review everything the agent generates. I started with Plan Mode to define the requirements, then moved on to implementation.
->
-> That said, there was a tricky timestamp bug that caused audio/video stuttering, and Claude kept hallucinating answers instead of helping. After a deep-dive on my own, I found the root cause. I also noticed some parts of the code that could be improved, but I decided to keep things as-is for now. Any future improvements I'll have Claude handle.
+
+## AI disclaimer
+
+This repo is a Rust port of my [RTMP Go server](https://github.com/torresjeff/rtmp), which was my first time dabbling in video codecs and streaming. Almost all of the code in this Rust version was written by AI (Claude Opus 4.5).
+
+I recently had an idea that required an RTMP server, so I used it as an excuse to write some Rust and try out some agentic programming. This repo is partly an experiment to see how far I could get by vibecoding the entire thing with Claude Code. The answer? **Far!**
+ 
+The whole thing took around 8 hours. It probably could have been faster if I auto-accepted edits without reading the code, but I like to review everything the agent generates. I started with Plan Mode to define the requirements, then moved on to implementation.
+
+That said, there was a tricky timestamp bug that caused audio/video stuttering, and Claude kept hallucinating answers instead of helping. After a deep-dive on my own, I found the root cause. I also noticed some parts of the code that could be improved, but I decided to keep things as-is for now. Any future improvements I'll have Claude handle.
 
 
 ## Features
