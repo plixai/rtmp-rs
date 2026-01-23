@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                     }
                 }
-                ClientEvent::AudioFrame { timestamp, data } => {
+                ClientEvent::AudioFrame { timestamp, data: _ } => {
                     println!("  Audio frame timestamp: {}", timestamp);
                     audio_frames += 1;
                 }
