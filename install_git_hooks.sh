@@ -15,13 +15,13 @@ mkdir -p "$HOOKS_DIR"
 # Create pre-commit hook
 cat > "$HOOKS_DIR/pre-commit" << 'EOF'
 #!/bin/sh
-# Pre-commit hook: Run cargo fmt before committing
+# Pre-commit hook: Verify formatting before committing
 
-# Format all Rust files
-cargo fmt
-
-# Stage any formatting changes
-git add -u
+# Check if any files need formatting (--check exits non-zero if changes needed)
+if ! cargo fmt --check > /dev/null 2>&1; then
+    echo "Error: Some files need formatting. Run 'cargo fmt' and review the changes."
+    exit 1
+fi
 
 exit 0
 EOF

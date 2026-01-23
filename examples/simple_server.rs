@@ -208,6 +208,14 @@ impl RtmpHandler for MyHandler {
         println!("[{}] Disconnected", ctx.session_id);
     }
 
+    /// Controls which media callbacks are invoked for incoming A/V data.
+    ///
+    /// - `RawFlv`: Only `on_media_tag` is called. Use when forwarding/recording raw FLV.
+    /// - `ParsedFrames`: Only `on_video_frame`/`on_audio_frame` are called. Use when you
+    ///   need codec-level access (NALUs, AAC frames) but not raw tags.
+    /// - `Both` (default): All three callbacks are called.
+    ///
+    /// Parsing has CPU overhead. Use `RawFlv` if you only need raw tags.
     fn media_delivery_mode(&self) -> MediaDeliveryMode {
         MediaDeliveryMode::ParsedFrames
     }

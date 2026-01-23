@@ -13,11 +13,11 @@
 
 * **Async/Await** - Built on Tokio for high-performance concurrent connections
 * **Zero-Copy** - Uses `bytes::Bytes` throughout for efficient memory handling
-* **Backpressure Handling** - Slow subscribers drop video frames while audio keeps flowing, so viewers hear continuous sound instead of staring at a frozen buffer
-* **Pub/Sub** - Stream key routing with full publisher/subscriber support
-* **Late-Joiner GOP Cache** - Buffers keyframes so viewers don't wait for the next IDR frame
+* **Backpressure Handling** - Slow subscribers drop video frames while audio keeps flowing, so viewers hear continuous sound instead of staring at a frozen frame
+* **Built-in Pub/Sub** - Stream key routing works out of the box; no code required
+* **Late-Joiner GOP Cache** - Buffers keyframes so viewers don't wait for the next IDR frame when joining mid-stream
 * **Lenient Parsing** - Handles encoder quirks like empty app names and timestamp regression (OBS, Twitch compatible)
-* **Extensible** - Implement the `RtmpHandler` trait to add custom auth and media processing
+* **Extensible** - Optional `RtmpHandler` callbacks for custom auth and media processing
 
 ## Quick Start
 
@@ -49,7 +49,7 @@ impl RtmpHandler for MyHandler {
         AuthResult::Accept
     }
     
-    // See RtmpHandler trait in handler.rs for other available callbacks
+    // See RtmpHandler trait for other available callbacks
 }
 
 #[tokio::main]
@@ -103,16 +103,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Handler Callbacks
 
-The `RtmpHandler` trait provides hooks into the RTMP lifecycle:
+The `RtmpHandler` trait provides optional hooks for custom logic. All callbacks have sensible defaults that accept connections and allow streams - you only override what you need:
+
+```rust
+use rtmp_rs::{RtmpHandler, AuthResult};
+use rtmp_rs::session::SessionContext;
+use rtmp_rs::protocol::message::PublishParams;
+
+struct AuthHandler;
+
+#[async_trait::async_trait]
+impl RtmpHandler for AuthHandler {
+    // Only override what you need - everything else uses defaults
+    async fn on_publish(&self, _ctx: &SessionContext, params: &PublishParams) -> AuthResult {
+        if validate_stream_key(&params.stream_key) {
+            AuthResult::Accept
+        } else {
+            AuthResult::Reject("Invalid stream key".into())
+        }
+    }
+}
+```
+
+Available callbacks:
 
 | Callback | Use Case |
 |----------|----------|
 | `on_connection` | IP blocklist, rate limiting |
+| `on_handshake_complete` | Post-handshake setup, before connect command, logging |
 | `on_connect` | Validate app name, parse auth tokens from tcUrl |
+| `on_disconnect` | Connection cleanup, logging |
 | `on_fc_publish` | Early stream key validation (OBS sends this first) |
 | `on_publish` | Main stream key authentication |
+| `on_publish_stop` | Publisher cleanup, notifications |
 | `on_play` | Subscriber authorization |
+| `on_pause` | Handle subscriber pause |
+| `on_unpause` | Handle subscriber resume |
 | `on_metadata` | Capture stream info (resolution, bitrate, codec) |
+| `on_media_tag` | Raw FLV tag access, custom filtering |
 | `on_video_frame` | Process H.264 NALUs |
 | `on_audio_frame` | Process AAC frames |
 | `on_keyframe` | Track GOP boundaries |
@@ -134,10 +162,7 @@ let config = ServerConfig::default()
 ## Testing
 
 ```bash
-# Run all tests
-cargo test
-
-# Stream with ffmpeg
+# Stream (publish) with ffmpeg
 ffmpeg -re -i test.mp4 -c copy -f flv rtmp://localhost/live/test_key
 
 # Play with ffplay
