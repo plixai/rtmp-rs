@@ -1,5 +1,6 @@
 # rtmp-rs
 
+[![Crates.io Version](https://img.shields.io/crates/v/rtmp-rs)](https://crates.io/crates/rtmp-rs)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![Build and tests](https://github.com/torresjeff/rtmp-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/torresjeff/rtmp-rs/actions/workflows/rust.yml)
