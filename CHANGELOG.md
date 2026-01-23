@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 ## [0.2.0] - 2026-01-23
 
 ### BREAKING CHANGES
@@ -11,21 +14,10 @@ All notable changes to this project will be documented in this file.
   - The `#[async_trait]` attribute is no longer needed on handler implementations
   - The `async_trait` crate is no longer required as a dependency
 
-### Added
-
-- New `flv_recorder` example demonstrating how to record RTMP streams to FLV files without external dependencies
-- `on_play_stop` callback is now properly invoked when play sessions end (was previously defined but never called)
-- Significantly expanded test coverage from ~41 tests to 271 tests
-
 ### Changed
 
-- Refactored registry module into separate files (`frame.rs`, `entry.rs`, `store.rs`, `error.rs`) for improved code organization
-- Updated README with complete Handler Callbacks table documenting all available callbacks
-- Improved documentation for `media_delivery_mode` in examples
-
-### Fixed
-
-- `on_play_stop` callback now properly invoked when play sessions end
+- Migrated all async trait methods to use `impl Future` return types instead of `#[async_trait]` macro
+- Updated all examples and documentation to reflect native async trait syntax
 
 ## Migration from 0.1.x
 
@@ -95,16 +87,63 @@ impl RtmpHandler for MyHandler {
    cargo build
    ```
 
-## [0.1.0] - Initial Release
+## [0.1.4] - 2026-01-22
+
+### Changed
+
+- Refactored registry module into separate files for improved code organization:
+  - `entry.rs` - Stream entry management
+  - `error.rs` - Registry error types
+  - `frame.rs` - Frame handling
+  - `store.rs` - Stream storage
+- Improved README Handler Callbacks documentation with expanded table showing all available callbacks
+
+## [0.1.3] - 2026-01-21
+
+### Added
+
+- New `flv_recorder` example demonstrating how to record RTMP streams to FLV files without external dependencies
+
+### Changed
+
+- Improved README documentation with clearer descriptions for Pub/Sub and handler callbacks
+
+## [0.1.2] - 2026-01-20
+
+### Added
+
+- GitHub Actions CI workflow for automated builds and tests
+- Build status badge in README
+
+### Changed
+
+- Improved backpressure handling description - clarified that slow subscribers drop video frames while audio keeps flowing
+- Moved AI disclaimer section to bottom of README for better documentation flow
+
+## [0.1.1] - 2026-01-19
+
+### Fixed
+
+- Minor bug fixes and stability improvements
+
+## [0.1.0] - 2026-01-18
+
+### Added
 
 - Initial release of rtmp-rs
-- RTMP server implementation with `RtmpHandler` trait
-- RTMP client with `RtmpConnector` and `RtmpPuller`
+- RTMP server implementation with `RtmpHandler` trait for custom authentication and media processing
+- RTMP client with `RtmpConnector` and `RtmpPuller` for pulling streams
 - AMF0/AMF3 serialization support
 - H.264/AVC and AAC parsing
 - GOP buffering for late-joiner support
-- OBS and encoder compatibility handling
+- OBS and encoder compatibility with lenient parsing mode
+- Backpressure handling for slow subscribers
+- Zero-copy design using `bytes::Bytes`
 - Examples: `simple_server`, `puller`
 
-[0.2.0]: https://github.com/torresjeff/rtmp-rs/compare/v0.1.0...v0.2.0
+[0.2.0]: https://github.com/torresjeff/rtmp-rs/compare/v0.1.4...v0.2.0
+[0.1.4]: https://github.com/torresjeff/rtmp-rs/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/torresjeff/rtmp-rs/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/torresjeff/rtmp-rs/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/torresjeff/rtmp-rs/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/torresjeff/rtmp-rs/releases/tag/v0.1.0
