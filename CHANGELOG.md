@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-01-23
+
+### Added
+
+- New `on_unpublish` callback in `RtmpHandler` trait, called when a publisher stops streaming. This provides a cleaner, more intuitive API naming that pairs with `on_publish`.
+
+### Deprecated
+
+- `on_publish_stop` is now deprecated in favor of `on_unpublish`. The method is marked with `#[deprecated(since = "0.3.0", note = "Use on_unpublish instead")]`.
+
+### Notes
+
+- **Backward compatibility**: Both `on_publish_stop` and `on_unpublish` are called when a publish stream ends. Existing implementations using `on_publish_stop` will continue to work, but should migrate to `on_unpublish` to avoid deprecation warnings.
+
 ## [0.2.0] - 2026-01-23
 
 ### BREAKING CHANGES
@@ -141,6 +155,7 @@ impl RtmpHandler for MyHandler {
 - Zero-copy design using `bytes::Bytes`
 - Examples: `simple_server`, `puller`
 
+[0.3.0]: https://github.com/torresjeff/rtmp-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/torresjeff/rtmp-rs/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/torresjeff/rtmp-rs/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/torresjeff/rtmp-rs/compare/v0.1.2...v0.1.3

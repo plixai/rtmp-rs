@@ -687,7 +687,9 @@ impl<H: RtmpHandler> Connection<H> {
                     stream.stream_key.unwrap_or_default(),
                     true,
                 );
+                #[allow(deprecated)]
                 self.handler.on_publish_stop(&stream_ctx).await;
+                self.handler.on_unpublish(&stream_ctx).await;
             }
         }
 

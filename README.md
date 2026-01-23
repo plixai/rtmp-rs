@@ -133,7 +133,7 @@ Available callbacks:
 | `on_disconnect` | Connection cleanup, logging |
 | `on_fc_publish` | Early stream key validation (OBS sends this first) |
 | `on_publish` | Main stream key authentication |
-| `on_publish_stop` | Publisher cleanup, notifications |
+| `on_unpublish` | Publisher cleanup, notifications |
 | `on_play` | Subscriber authorization |
 | `on_pause` | Handle subscriber pause |
 | `on_unpause` | Handle subscriber resume |

@@ -197,10 +197,16 @@ pub trait RtmpHandler: Send + Sync + 'static {
     }
 
     /// Called when the publish stream ends
+    #[deprecated(since = "0.3.0", note = "Use on_unpublish instead")]
     fn on_publish_stop(
         &self,
         _ctx: &StreamContext,
     ) -> impl std::future::Future<Output = ()> + Send {
+        async {}
+    }
+
+    /// Called when the publish stream ends
+    fn on_unpublish(&self, _ctx: &StreamContext) -> impl std::future::Future<Output = ()> + Send {
         async {}
     }
 

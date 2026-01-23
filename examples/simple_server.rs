@@ -194,9 +194,9 @@ impl RtmpHandler for MyHandler {
         }
     }
 
-    async fn on_publish_stop(&self, ctx: &StreamContext) {
+    async fn on_unpublish(&self, ctx: &StreamContext) {
         println!(
-            "[{}] Publish stopped: {}",
+            "[{}] Unpublish called: {}",
             ctx.session.session_id, ctx.stream_key
         );
         self.print_stats();

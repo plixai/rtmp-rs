@@ -300,7 +300,7 @@ impl RtmpHandler for RecorderHandler {
     /// Called when publishing stops
     ///
     /// Finalize the FLV file
-    async fn on_publish_stop(&self, ctx: &StreamContext) {
+    async fn on_unpublish(&self, ctx: &StreamContext) {
         let mut recorders = self.recorders.lock().unwrap();
 
         if let Some(recorder) = recorders.remove(&ctx.stream_key) {
