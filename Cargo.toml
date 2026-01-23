@@ -30,5 +30,9 @@ name = "puller"
 path = "examples/puller.rs"
 
 [[example]]
-name = "flv_recorder"
-path = "examples/flv_recorder.rs"
+name = "flv_recorder_client"
+path = "examples/flv_recorder_client.rs"
+
+[[example]]
+name = "flv_recorder_server"
+path = "examples/flv_recorder_server.rs"

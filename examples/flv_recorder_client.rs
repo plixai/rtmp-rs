@@ -1,11 +1,14 @@
-//! FLV Recorder - Records an RTMP stream to an FLV file
+//! FLV Recorder Client - Pulls an RTMP stream and records to an FLV file (client-side)
 //!
-//! Run with: cargo run --example flv_recorder -- rtmp://localhost/live/test_key output.flv
+//! Run with: cargo run --example flv_recorder_client -- rtmp://localhost/live/test_key output.flv
 //!
 //! This example demonstrates:
-//! - Connecting to an RTMP server as a client
+//! - Connecting to an RTMP server as a **client** (pull mode)
+//! - Using `RtmpPuller` to receive stream data
 //! - Writing the FLV file format manually (no external libraries)
 //! - Graceful shutdown on Ctrl+C
+//!
+//! For server-side recording (recording incoming publishes), see `flv_recorder_server.rs`.
 //!
 //! # FLV File Format Overview
 //!
@@ -135,23 +138,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("rtmp_rs=info".parse()?)
-                .add_directive("flv_recorder=info".parse()?),
+                .add_directive("flv_puller=info".parse()?),
         )
         .init();
 
     // Parse command line arguments
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        eprintln!("Usage: flv_recorder <rtmp_url> <output.flv>");
-        eprintln!("Example: flv_recorder rtmp://localhost/live/test_key recording.flv");
+        eprintln!("Usage: flv_puller <rtmp_url> <output.flv>");
+        eprintln!("Example: flv_puller rtmp://localhost/live/test_key recording.flv");
         std::process::exit(1);
     }
 
     let url = &args[1];
     let output_path = PathBuf::from(&args[2]);
 
-    println!("RTMP FLV Recorder");
-    println!("=================");
+    println!("RTMP FLV Recorder (Client)");
+    println!("========================");
     println!("Source: {}", url);
     println!("Output: {}", output_path.display());
     println!();
