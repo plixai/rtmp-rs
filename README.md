@@ -171,7 +171,7 @@ ffplay rtmp://localhost/live/test_key
 
 ## AI disclaimer
 
-This repo is a Rust rewrite of my [RTMP Go server](https://github.com/torresjeff/rtmp), which was my first time dabbling in video codecs and streaming. Almost all of the code in this Rust version was written by AI (Claude Opus 4.5).
+This repo is a Rust rewrite of my [RTMP Go server](https://github.com/torresjeff/rtmp). Almost all of the code in this Rust version was written by AI (Claude Opus 4.5).
 
 I recently had an idea that required an RTMP server, so I used it as an excuse to write some Rust and try out some agentic programming. This repo is partly an experiment to see how far I could get by vibecoding the entire thing with Claude Code. The answer? **Far!**
  

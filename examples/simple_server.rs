@@ -1,6 +1,12 @@
 //! Simple RTMP server example with pub/sub support
 //!
-//! Run with: cargo run --example simple_server
+//! Run with: cargo run --example simple_server [BIND_ADDR]
+//!
+//! Examples:
+//!   cargo run --example simple_server                    # binds to 0.0.0.0:1935
+//!   cargo run --example simple_server localhost          # binds to 127.0.0.1:1935
+//!   cargo run --example simple_server 127.0.0.1:1936     # binds to 127.0.0.1:1936
+//!   cargo run --example simple_server 0.0.0.0:1940       # binds to 0.0.0.0:1940
 //!
 //! ## Publishing (send stream)
 //!
@@ -26,6 +32,7 @@
 //! - Backpressure: Slow subscribers skip to next keyframe instead of buffering indefinitely
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -219,8 +226,73 @@ impl RtmpHandler for MyHandler {
     }
 }
 
+/// Parse bind address from command line argument.
+///
+/// Accepts formats:
+/// - "localhost" -> 127.0.0.1:1935
+/// - "localhost:1936" -> 127.0.0.1:1936
+/// - "127.0.0.1" -> 127.0.0.1:1935
+/// - "127.0.0.1:1936" -> 127.0.0.1:1936
+/// - "0.0.0.0:1935" -> 0.0.0.0:1935
+fn parse_bind_addr(arg: &str) -> Result<SocketAddr, String> {
+    const DEFAULT_PORT: u16 = 1935;
+
+    // Replace "localhost" with "127.0.0.1"
+    let normalized = arg.replace("localhost", "127.0.0.1");
+
+    // Try parsing as SocketAddr first (includes port)
+    if let Ok(addr) = normalized.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+
+    // Try parsing as IP address without port
+    if let Ok(ip) = normalized.parse::<std::net::IpAddr>() {
+        return Ok(SocketAddr::new(ip, DEFAULT_PORT));
+    }
+
+    Err(format!(
+        "Invalid bind address: '{}'. Expected format: IP:PORT or IP or 'localhost'",
+        arg
+    ))
+}
+
+fn print_usage() {
+    eprintln!("Usage: simple_server [BIND_ADDR]");
+    eprintln!();
+    eprintln!("Arguments:");
+    eprintln!("  BIND_ADDR    Address to bind to (default: 0.0.0.0:1935)");
+    eprintln!();
+    eprintln!("Examples:");
+    eprintln!("  simple_server                     # binds to 0.0.0.0:1935");
+    eprintln!("  simple_server localhost           # binds to 127.0.0.1:1935");
+    eprintln!("  simple_server localhost:1936      # binds to 127.0.0.1:1936");
+    eprintln!("  simple_server 127.0.0.1:1936      # binds to 127.0.0.1:1936");
+    eprintln!("  simple_server 0.0.0.0:1940        # binds to 0.0.0.0:1940");
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse command line arguments
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_usage();
+        return Ok(());
+    }
+
+    let bind_addr = match args.get(1) {
+        Some(addr_str) => match parse_bind_addr(addr_str) {
+            Ok(addr) => addr,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                eprintln!();
+                print_usage();
+                std::process::exit(1);
+            }
+        },
+        None => "0.0.0.0:1935".parse().unwrap(),
+    };
+
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -230,8 +302,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    // Create server config
-    let config = ServerConfig::default();
+    // Create server config with the specified bind address
+    let config = ServerConfig {
+        bind_addr,
+        ..ServerConfig::default()
+    };
 
     println!("Starting RTMP server on {}", config.bind_addr);
     println!();

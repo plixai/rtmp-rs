@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-01-24
+
+### Added
+
+- `AvcConfig` now exposes a `raw: Bytes` field containing the original AVCDecoderConfigurationRecord bytes. This allows direct access to the H.264 sequence header data for use cases like FLV recording, stream relaying, or custom media processing. This matches the existing `raw` field pattern in `AudioSpecificConfig` for AAC.
+
 ## [0.3.0] - 2026-01-23
 
 ### Added
@@ -155,6 +161,7 @@ impl RtmpHandler for MyHandler {
 - Zero-copy design using `bytes::Bytes`
 - Examples: `simple_server`, `puller`
 
+[0.4.0]: https://github.com/torresjeff/rtmp-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/torresjeff/rtmp-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/torresjeff/rtmp-rs/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/torresjeff/rtmp-rs/compare/v0.1.3...v0.1.4

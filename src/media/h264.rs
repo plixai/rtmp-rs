@@ -141,14 +141,20 @@ pub struct AvcConfig {
     pub sps: Vec<Bytes>,
     /// Picture Parameter Sets
     pub pps: Vec<Bytes>,
+    /// Raw AVCDecoderConfigurationRecord bytes
+    pub raw: Bytes,
 }
 
 impl AvcConfig {
     /// Parse from AVCDecoderConfigurationRecord
-    pub fn parse(mut data: Bytes) -> Result<Self> {
+    pub fn parse(data: Bytes) -> Result<Self> {
         if data.len() < 7 {
             return Err(MediaError::InvalidAvcPacket.into());
         }
+
+        // Clone the raw data before consuming it
+        let raw = data.clone();
+        let mut data = data;
 
         let version = data.get_u8();
         if version != 1 {
@@ -198,6 +204,7 @@ impl AvcConfig {
             nalu_length_size,
             sps,
             pps,
+            raw,
         })
     }
 
@@ -375,7 +382,7 @@ mod tests {
             0x68, 0xEF, 0x38, // PPS data
         ]);
 
-        let config = AvcConfig::parse(data).unwrap();
+        let config = AvcConfig::parse(data.clone()).unwrap();
         assert_eq!(config.profile, 100);
         assert_eq!(config.level, 31);
         assert_eq!(config.nalu_length_size, 4);
@@ -383,6 +390,9 @@ mod tests {
         assert_eq!(config.pps.len(), 1);
         assert_eq!(config.profile_name(), "High");
         assert_eq!(config.level_string(), "3.1");
+        // Verify raw field contains the original bytes
+        assert_eq!(config.raw.len(), data.len());
+        assert_eq!(config.raw, data);
     }
 
     #[test]
@@ -599,6 +609,7 @@ mod tests {
                 nalu_length_size: 4,
                 sps: vec![],
                 pps: vec![],
+                raw: Bytes::new(),
             };
             assert_eq!(config.profile_name(), expected_name);
         }
@@ -613,6 +624,7 @@ mod tests {
             nalu_length_size: 4,
             sps: vec![],
             pps: vec![],
+            raw: Bytes::new(),
         };
         assert_eq!(config.level_string(), "4.1");
 
@@ -623,6 +635,7 @@ mod tests {
             nalu_length_size: 4,
             sps: vec![],
             pps: vec![],
+            raw: Bytes::new(),
         };
         assert_eq!(config2.level_string(), "5.2");
     }
