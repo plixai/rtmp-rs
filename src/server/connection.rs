@@ -21,7 +21,10 @@ use crate::registry::{BroadcastFrame, FrameType, StreamKey, StreamRegistry};
 
 use crate::amf::AmfValue;
 use crate::error::{Error, ProtocolError, Result};
+use crate::media::enhanced_audio::EnhancedAudioData;
+use crate::media::enhanced_video::EnhancedVideoData;
 use crate::media::flv::FlvTag;
+use crate::media::fourcc::{AudioFourCc, VideoFourCc};
 use crate::media::{AacData, H264Data};
 use crate::protocol::chunk::{ChunkDecoder, ChunkEncoder, RtmpChunk};
 use crate::protocol::constants::*;
@@ -36,6 +39,64 @@ use crate::server::config::ServerConfig;
 use crate::server::handler::{AuthResult, MediaDeliveryMode, RtmpHandler};
 use crate::session::context::{SessionContext, StreamContext};
 use crate::session::state::SessionState;
+
+/// Detected codec for logging purposes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DetectedCodec {
+    /// Legacy video codec (H.264/AVC)
+    LegacyVideo(u8),
+    /// Enhanced video codec (HEVC, AV1, VP9, etc.)
+    EnhancedVideo(VideoFourCc),
+    /// Legacy audio codec (AAC, MP3, etc.)
+    LegacyAudio(u8),
+    /// Enhanced audio codec (Opus, FLAC, AC-3, etc.)
+    EnhancedAudio(AudioFourCc),
+}
+
+impl DetectedCodec {
+    /// Get a human-friendly name for the codec.
+    fn name(&self) -> &'static str {
+        match self {
+            DetectedCodec::LegacyVideo(id) => match id {
+                7 => "H.264/AVC",
+                4 => "VP6",
+                2 => "H.263",
+                _ => "Unknown Video",
+            },
+            DetectedCodec::EnhancedVideo(fourcc) => match fourcc {
+                VideoFourCc::Avc => "H.264/AVC (E-RTMP)",
+                VideoFourCc::Hevc => "H.265/HEVC",
+                VideoFourCc::Av1 => "AV1",
+                VideoFourCc::Vp9 => "VP9",
+                VideoFourCc::Vp8 => "VP8",
+            },
+            DetectedCodec::LegacyAudio(id) => match id {
+                10 => "AAC",
+                2 => "MP3",
+                11 => "Speex",
+                1 => "ADPCM",
+                0 => "PCM",
+                _ => "Unknown Audio",
+            },
+            DetectedCodec::EnhancedAudio(fourcc) => match fourcc {
+                AudioFourCc::Aac => "AAC (E-RTMP)",
+                AudioFourCc::Opus => "Opus",
+                AudioFourCc::Flac => "FLAC",
+                AudioFourCc::Ac3 => "AC-3",
+                AudioFourCc::Eac3 => "E-AC-3",
+                AudioFourCc::Mp3 => "MP3 (E-RTMP)",
+            },
+        }
+    }
+
+    /// Check if this is an enhanced (E-RTMP) codec.
+    fn is_enhanced(&self) -> bool {
+        matches!(
+            self,
+            DetectedCodec::EnhancedVideo(_) | DetectedCodec::EnhancedAudio(_)
+        )
+    }
+}
 
 /// Subscriber state for backpressure handling
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +151,12 @@ pub struct Connection<H: RtmpHandler> {
 
     last_video_ts: Option<u32>,
 
+    /// Detected video codec
+    detected_video_codec: Option<DetectedCodec>,
+
+    /// Detected audio codec
+    detected_audio_codec: Option<DetectedCodec>,
+
     /// Broadcast receiver for subscriber mode
     frame_rx: Option<broadcast::Receiver<BroadcastFrame>>,
 
@@ -142,6 +209,8 @@ impl<H: RtmpHandler> Connection<H> {
             subscribed_to: None,
             last_audio_ts: None,
             last_video_ts: None,
+            detected_video_codec: None,
+            detected_audio_codec: None,
             frame_rx: None,
             subscriber_state: SubscriberState::Normal,
             consecutive_lag_count: 0,
@@ -719,7 +788,7 @@ impl<H: RtmpHandler> Connection<H> {
                     // Client doesn't support E-RTMP, use legacy mode
                     tracing::debug!(
                         session_id = self.state.id,
-                        "Using legacy RTMP (client doesn't support E-RTMP)"
+                        "Using legacy RTMP (client doesn't support E-RTMP). The client may still send enhanced audio/video."
                     );
                     return Ok(None);
                 }
@@ -1262,7 +1331,8 @@ impl<H: RtmpHandler> Connection<H> {
         }
 
         if let Some(prev_audio_ts) = self.last_audio_ts {
-            let timestamp_delta = timestamp - prev_audio_ts;
+            // Use wrapping_sub to handle timestamp wraparound (RTMP timestamps are 32-bit)
+            let timestamp_delta = timestamp.wrapping_sub(prev_audio_ts);
             tracing::trace!(
                 timestamp = timestamp,
                 last_audio_ts = prev_audio_ts,
@@ -1272,14 +1342,48 @@ impl<H: RtmpHandler> Connection<H> {
         }
         self.last_audio_ts = Some(timestamp);
 
+        // Detect Enhanced RTMP audio (SoundFormat=9) vs legacy FLV
+        let is_enhanced = EnhancedAudioData::is_enhanced(data[0]);
+
+        // Detect and log codec on first frame or codec change
+        let detected = if is_enhanced {
+            // Enhanced audio: FourCC is at bytes 1-4 (after header byte)
+            if data.len() >= 5 {
+                AudioFourCc::from_bytes(&data[1..]).map(DetectedCodec::EnhancedAudio)
+            } else {
+                None
+            }
+        } else {
+            // Legacy audio: sound format is in upper 4 bits
+            Some(DetectedCodec::LegacyAudio(data[0] >> 4))
+        };
+
+        if let Some(ref codec) = detected {
+            if self.detected_audio_codec.as_ref() != Some(codec) {
+                tracing::info!(
+                    session_id = self.state.id,
+                    codec = codec.name(),
+                    enhanced = codec.is_enhanced(),
+                    "Audio codec detected"
+                );
+                self.detected_audio_codec = Some(codec.clone());
+            }
+        }
+
         // Find publishing stream
         let stream_id = self.find_publishing_stream()?;
         let stream = self
             .state
             .get_stream_mut(stream_id)
-            .ok_or_else(|| ProtocolError::StreamNotFound(stream_id))?;
+            .ok_or(ProtocolError::StreamNotFound(stream_id))?;
 
-        let is_header = data.len() >= 2 && (data[0] >> 4) == 10 && data[1] == 0;
+        let is_header = if is_enhanced {
+            // Enhanced audio: packet type 0 = SequenceStart
+            (data[0] & 0x0F) == 0
+        } else {
+            // Legacy AAC: SoundFormat=10 (0xA_) and AACPacketType=0
+            data.len() >= 2 && (data[0] >> 4) == 10 && data[1] == 0
+        };
         stream.on_audio(timestamp, is_header, data.len());
 
         // Store sequence header
@@ -1304,8 +1408,15 @@ impl<H: RtmpHandler> Connection<H> {
             mode,
             MediaDeliveryMode::ParsedFrames | MediaDeliveryMode::Both
         ) {
-            if data.len() >= 2 && (data[0] >> 4) == 10 {
-                // AAC
+            if is_enhanced {
+                // Enhanced RTMP audio (Opus, FLAC, AC-3, etc.)
+                if let Ok(enhanced_data) = EnhancedAudioData::parse(data.clone()) {
+                    self.handler
+                        .on_enhanced_audio_frame(&stream_ctx, &enhanced_data, timestamp)
+                        .await;
+                }
+            } else if data.len() >= 2 && (data[0] >> 4) == 10 {
+                // Legacy AAC
                 if let Ok(aac_data) = AacData::parse(data.slice(1..)) {
                     self.handler
                         .on_audio_frame(&stream_ctx, &aac_data, timestamp)
@@ -1330,7 +1441,8 @@ impl<H: RtmpHandler> Connection<H> {
         }
 
         if let Some(prev_video_ts) = self.last_video_ts {
-            let timestamp_delta = timestamp - prev_video_ts;
+            // Use wrapping_sub to handle timestamp wraparound (RTMP timestamps are 32-bit)
+            let timestamp_delta = timestamp.wrapping_sub(prev_video_ts);
             tracing::trace!(
                 timestamp = timestamp,
                 last_video_ts = prev_video_ts,
@@ -1340,15 +1452,54 @@ impl<H: RtmpHandler> Connection<H> {
         }
         self.last_video_ts = Some(timestamp);
 
+        // Detect Enhanced RTMP video (ExVideoTagHeader) vs legacy FLV
+        let is_enhanced = EnhancedVideoData::is_enhanced(data[0]);
+
+        // Detect and log codec on first frame or codec change
+        let detected = if is_enhanced {
+            // Enhanced video: FourCC is at bytes 1-4 (after header byte)
+            if data.len() >= 5 {
+                VideoFourCc::from_bytes(&data[1..]).map(DetectedCodec::EnhancedVideo)
+            } else {
+                None
+            }
+        } else {
+            // Legacy video: codec ID is in lower 4 bits
+            Some(DetectedCodec::LegacyVideo(data[0] & 0x0F))
+        };
+
+        if let Some(ref codec) = detected {
+            if self.detected_video_codec.as_ref() != Some(codec) {
+                tracing::info!(
+                    session_id = self.state.id,
+                    codec = codec.name(),
+                    enhanced = codec.is_enhanced(),
+                    "Video codec detected"
+                );
+                self.detected_video_codec = Some(codec.clone());
+            }
+        }
+
         // Find publishing stream
         let stream_id = self.find_publishing_stream()?;
         let stream = self
             .state
             .get_stream_mut(stream_id)
-            .ok_or_else(|| ProtocolError::StreamNotFound(stream_id))?;
+            .ok_or(ProtocolError::StreamNotFound(stream_id))?;
 
-        let is_keyframe = (data[0] >> 4) == 1;
-        let is_header = data.len() >= 2 && (data[0] & 0x0F) == 7 && data[1] == 0;
+        let (is_keyframe, is_header) = if is_enhanced {
+            // ExVideoTagHeader format: bit 7 set, bits 4-6 are frame type, bits 0-3 are packet type
+            let frame_type = (data[0] >> 4) & 0x07;
+            let packet_type = data[0] & 0x0F;
+            let is_keyframe = frame_type == 1 || frame_type == 4; // Keyframe or GeneratedKeyframe
+            let is_header = packet_type == 0; // SequenceStart
+            (is_keyframe, is_header)
+        } else {
+            // Legacy FLV format: bits 4-7 are frame type, bits 0-3 are codec ID
+            let is_keyframe = (data[0] >> 4) == 1;
+            let is_header = data.len() >= 2 && (data[0] & 0x0F) == 7 && data[1] == 0;
+            (is_keyframe, is_header)
+        };
         stream.on_video(timestamp, is_keyframe, is_header, data.len());
 
         // Create FLV tag
@@ -1382,8 +1533,15 @@ impl<H: RtmpHandler> Connection<H> {
             mode,
             MediaDeliveryMode::ParsedFrames | MediaDeliveryMode::Both
         ) {
-            if data.len() >= 2 && (data[0] & 0x0F) == 7 {
-                // AVC/H.264
+            if is_enhanced {
+                // Enhanced RTMP video (HEVC, AV1, VP9, etc.)
+                if let Ok(enhanced_data) = EnhancedVideoData::parse(data.clone()) {
+                    self.handler
+                        .on_enhanced_video_frame(&stream_ctx, &enhanced_data, timestamp)
+                        .await;
+                }
+            } else if data.len() >= 2 && (data[0] & 0x0F) == 7 {
+                // Legacy AVC/H.264
                 if let Ok(h264_data) = H264Data::parse(data.slice(1..)) {
                     self.handler
                         .on_video_frame(&stream_ctx, &h264_data, timestamp)
