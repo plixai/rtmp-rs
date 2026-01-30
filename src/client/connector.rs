@@ -356,6 +356,101 @@ impl RtmpConnector {
         }
     }
 
+    /// Start publishing a stream
+    pub async fn publish(&mut self, stream_name: &str) -> Result<()> {
+        if self.stream_id == 0 {
+            self.create_stream().await?;
+        }
+
+        // releaseStream (some servers require this)
+        let release_cmd = Command {
+            name: CMD_RELEASE_STREAM.to_string(),
+            transaction_id: 3.0,
+            command_object: AmfValue::Null,
+            arguments: vec![AmfValue::String(stream_name.to_string())],
+            stream_id: 0,
+        };
+        self.send_command(&release_cmd).await?;
+
+        // FCPublish (some servers require this)
+        let fc_cmd = Command {
+            name: CMD_FC_PUBLISH.to_string(),
+            transaction_id: 4.0,
+            command_object: AmfValue::Null,
+            arguments: vec![AmfValue::String(stream_name.to_string())],
+            stream_id: 0,
+        };
+        self.send_command(&fc_cmd).await?;
+
+        // Send publish command
+        let cmd = Command {
+            name: CMD_PUBLISH.to_string(),
+            transaction_id: 0.0,
+            command_object: AmfValue::Null,
+            arguments: vec![
+                AmfValue::String(stream_name.to_string()),
+                AmfValue::String("live".to_string()),
+            ],
+            stream_id: self.stream_id,
+        };
+        self.send_command(&cmd).await?;
+
+        // Wait for onStatus with NetStream.Publish.Start
+        loop {
+            let msg = self.read_message().await?;
+            match msg {
+                RtmpMessage::Command(status) if status.name == CMD_ON_STATUS => {
+                    if let Some(info) = status.arguments.first().and_then(|v| v.as_object()) {
+                        if let Some(code) = info.get("code").and_then(|v| v.as_str()) {
+                            if code == NS_PUBLISH_START {
+                                return Ok(());
+                            } else if code.contains("Failed")
+                                || code.contains("Error")
+                                || code == NS_PUBLISH_BAD_NAME
+                            {
+                                return Err(Error::Rejected(code.to_string()));
+                            }
+                        }
+                    }
+                }
+                RtmpMessage::Command(cmd)
+                    if cmd.name == CMD_RESULT || cmd.name == CMD_ON_FC_PUBLISH =>
+                {
+                    // Responses to releaseStream/FCPublish - ignore
+                }
+                RtmpMessage::Command(cmd) if cmd.name == CMD_ERROR => {
+                    return Err(Error::Rejected("Publish rejected".into()));
+                }
+                RtmpMessage::SetChunkSize(size) => {
+                    self.chunk_decoder.set_chunk_size(size);
+                }
+                RtmpMessage::WindowAckSize(_) | RtmpMessage::SetPeerBandwidth { .. } => {}
+                _ => {}
+            }
+        }
+    }
+
+    /// Send audio data on the published stream.
+    ///
+    /// `data` is the FLV audio tag body (header byte + payload).
+    /// `timestamp` is in milliseconds.
+    pub async fn send_audio_data(&mut self, data: Bytes, timestamp: u32) -> Result<()> {
+        let chunk = RtmpChunk {
+            csid: CSID_AUDIO,
+            timestamp,
+            message_type: crate::protocol::constants::MSG_AUDIO,
+            stream_id: self.stream_id,
+            payload: data,
+        };
+
+        self.write_buf.clear();
+        self.chunk_encoder.encode(&chunk, &mut self.write_buf);
+        self.writer.write_all(&self.write_buf).await?;
+        self.writer.flush().await?;
+
+        Ok(())
+    }
+
     /// Read the next RTMP message
     pub async fn read_message(&mut self) -> Result<RtmpMessage> {
         loop {
